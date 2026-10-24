@@ -21,10 +21,11 @@ export async function loadRecipeSnapshot(trx, recipeId) {
   if (!recipe) return null;
 
   const ingredients = await trx('recipe_ingredients as ri')
-    .join('products as p', 'p.id', 'ri.product_id')
+    .leftJoin('products as p', 'p.id', 'ri.product_id')
+    .leftJoin('recipes as s', 's.id', 'ri.sub_recipe_id')
     .where('ri.recipe_id', recipeId)
     .orderBy('ri.position')
-    .select('ri.product_id', 'p.name as product_name', 'ri.quantity', 'ri.unit');
+    .select('ri.product_id', 'p.name as product_name', 'ri.sub_recipe_id', 's.name as recipe_name', 'ri.quantity', 'ri.unit');
   const steps = await trx('recipe_steps').where('recipe_id', recipeId).orderBy('position').pluck('instruction');
 
   return {
@@ -32,12 +33,14 @@ export async function loadRecipeSnapshot(trx, recipeId) {
     description: recipe.description,
     portions: recipe.portions,
     sellPrice: round2OrNull(recipe.sell_price),
-    ingredients: ingredients.map((line) => ({
-      productId: line.product_id,
-      productName: line.product_name,
-      quantity: line.quantity,
-      unit: line.unit,
-    })),
+    yieldQuantity: recipe.yield_quantity,
+    yieldUnit: recipe.yield_unit,
+    // Product lines: { productId, productName, quantity, unit }; sub-recipe lines: { recipeId, recipeName, quantity, unit }.
+    ingredients: ingredients.map((line) =>
+      line.sub_recipe_id != null
+        ? { recipeId: line.sub_recipe_id, recipeName: line.recipe_name, quantity: line.quantity, unit: line.unit }
+        : { productId: line.product_id, productName: line.product_name, quantity: line.quantity, unit: line.unit },
+    ),
     steps,
     foodCost: round2(recipe.food_cost),
   };
@@ -46,15 +49,26 @@ export async function loadRecipeSnapshot(trx, recipeId) {
 // Rebuilds a recipe snapshot from the `changes` of its 'deleted' change log entry, where empty
 // fields were left out.
 export function recipeSnapshotFromDeletion(changes) {
-  const snapshot = { name: null, description: null, portions: null, sellPrice: null, ingredients: [], steps: [], foodCost: null };
+  const snapshot = {
+    name: null,
+    description: null,
+    portions: null,
+    sellPrice: null,
+    yieldQuantity: null,
+    yieldUnit: null,
+    ingredients: [],
+    steps: [],
+    foodCost: null,
+  };
   for (const { field, from } of changes) snapshot[field] = from;
   return snapshot;
 }
 
-// Product names inside a recipe's ingredient list are only there for display: renaming a
-// product is logged on the product, not as a change of every recipe that uses it.
+// Names inside a recipe's ingredient list are only there for display: renaming a product or a
+// sub-recipe is logged on it, not as a change of every recipe that uses it.
 const comparable = {
-  ingredients: (list) => list?.map(({ productId, quantity, unit }) => [productId, quantity, unit]),
+  ingredients: (list) =>
+    list?.map(({ productId, recipeId, quantity, unit }) => [productId ?? null, recipeId ?? null, quantity, unit]),
 };
 
 function isSame(field, a, b) {

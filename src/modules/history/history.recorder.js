@@ -53,9 +53,10 @@ export async function recordProductPriceChange(trx, { product, previous = null, 
 
 /**
  * Stores a recipe's food cost, but only when it or the portions differ from the last entry.
- * `productPriceChangeId` links the entry to the product price change that caused it.
+ * `productPriceChangeId` links the entry to the product price change that caused it, and
+ * `subRecipeId` to the sub-recipe whose change reached this recipe.
  */
-export async function recordRecipeCost(trx, { recipeId, portions, foodCost, reason, productPriceChangeId = null }) {
+export async function recordRecipeCost(trx, { recipeId, portions, foodCost, reason, productPriceChangeId = null, subRecipeId = null }) {
   const last = await trx('recipe_cost_history')
     .where('recipe_id', recipeId)
     .orderBy('id', 'desc')
@@ -67,6 +68,7 @@ export async function recordRecipeCost(trx, { recipeId, portions, foodCost, reas
     recipe_id: recipeId,
     reason,
     product_price_change_id: productPriceChangeId,
+    sub_recipe_id: subRecipeId,
     portions,
     food_cost: foodCost,
     previous_portions: last?.portions ?? null,

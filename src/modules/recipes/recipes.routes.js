@@ -36,6 +36,10 @@ recipesRouter.patch('/:id', validate({ params: idParamsSchema, body: recipePatch
   res.json(await recipes.updateRecipe(req.validated.params.id, req.validated.body, { partial: true }));
 });
 
+recipesRouter.get('/:id/used-in', validate({ params: idParamsSchema }), async (req, res) => {
+  res.json({ items: await recipes.listRecipesUsingThisRecipe(req.validated.params.id) });
+});
+
 recipesRouter.post('/:id/restore', validate({ params: idParamsSchema }), async (req, res) => {
   res.json(await recipes.restoreRecipe(req.validated.params.id));
 });

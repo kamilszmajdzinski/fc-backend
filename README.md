@@ -48,6 +48,7 @@ test/            unit tests and API tests
 - **Price changes**: when a product's price, package size or package unit changes, every recipe using it is recalculated in the same transaction. The update response lists them in `recalculatedRecipes`.
 - **History**: every product price change and every change in a recipe's food cost or portions is recorded with the values before and after. A recipe entry caused by a product price change links to that change.
 - **Change log**: every create, update and delete of a product or recipe is logged field by field (`from` → `to`), including ingredient lists and steps. A recipe food cost change caused by a product price change links to the product change. Entries outlive deleted products and recipes.
+- **Sub-recipes**: a recipe line can be another recipe (`recipeId`), used in portions or, if the sub-recipe has a yield (e.g. 550 g), by weight or volume. Cost changes flow up through every level. Loops are rejected, and recipes in use can't be deleted.
 - **Deleting recipes**: recipes are soft-deleted. A deleted recipe is hidden everywhere and doesn't count as using its products, but it keeps its data and can be restored. Products are deleted for real.
 - **Rounding**: values are stored at full precision. Responses round money to 2 decimals and `unitPrice` to 6.
 
@@ -73,6 +74,7 @@ Quick overview (base path `/api/v1`, except `/health`):
 | GET | `/recipes/:id` | Full recipe with ingredients and steps |
 | GET | `/recipes/:id/cost-history` | Food cost changes, newest first, with the product price change that caused each one |
 | GET | `/recipes/:id/changes` | Change log of the recipe (all fields), newest first |
+| GET | `/recipes/:id/used-in` | Recipes that use this recipe as a sub-recipe |
 | GET | `/changes?entityType=&limit=&before=` | Change feed across all products and recipes, paged |
 | POST | `/recipes` | Create (201) |
 | PUT | `/recipes/:id` | Replace (missing lists become empty) |

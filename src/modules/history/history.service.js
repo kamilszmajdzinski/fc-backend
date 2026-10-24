@@ -117,7 +117,8 @@ export async function getProductPriceHistory(productId) {
   }));
 }
 
-// Newest first. Entries caused by a product price change name the product and its price change.
+// Newest first. Entries caused by a product price change name the product and its price change;
+// entries that reached this recipe through a sub-recipe name that sub-recipe.
 // Hidden (404) while the recipe is deleted, like the recipe itself; it comes back on restore.
 export async function getRecipeCostHistory(recipeId) {
   await ensureExists('recipes', 'Recipe', recipeId, { activeOnly: true });
@@ -125,10 +126,12 @@ export async function getRecipeCostHistory(recipeId) {
   const rows = await db('recipe_cost_history as h')
     .leftJoin('product_price_history as c', 'c.id', 'h.product_price_change_id')
     .leftJoin('products as p', 'p.id', 'c.product_id')
+    .leftJoin('recipes as s', 's.id', 'h.sub_recipe_id')
     .where('h.recipe_id', recipeId)
     .orderBy('h.id', 'desc')
     .select(
       'h.*',
+      's.name as sub_recipe_name',
       'c.product_id as cause_product_id',
       'c.product_name as cause_product_name_then',
       'p.name as cause_product_name_now',
@@ -159,5 +162,6 @@ export async function getRecipeCostHistory(recipeId) {
             pricePerUnit: round2(row.cause_price_per_unit),
             pricingUnit: pricingUnitFor(row.cause_package_unit),
           },
+    subRecipe: row.sub_recipe_id == null ? null : { id: row.sub_recipe_id, name: row.sub_recipe_name },
   }));
 }

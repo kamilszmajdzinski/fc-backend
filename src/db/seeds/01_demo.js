@@ -19,10 +19,10 @@ const recipes = [
     description: 'Słodkie kruche ciasto na formę do tarty 24 cm',
     portions: 10,
     ingredients: [
-      ['Masło 82%', 250, 'g'],
-      ['Mąka pszenna typ 450', 300, 'g'],
-      ['Cukier drobny', 100, 'g'],
-      ['Jajka L', 2, 'piece'],
+      { product: 'Masło 82%', quantity: 250, unit: 'g' },
+      { product: 'Mąka pszenna typ 450', quantity: 300, unit: 'g' },
+      { product: 'Cukier drobny', quantity: 100, unit: 'g' },
+      { product: 'Jajka L', quantity: 2, unit: 'piece' },
     ],
     steps: [
       'Posiekaj zimne masło z mąką i cukrem na drobną kruszonkę.',
@@ -35,15 +35,28 @@ const recipes = [
     name: 'Krem chantilly',
     description: 'Waniliowa bita śmietana',
     portions: 8,
+    yieldQuantity: 550,
+    yieldUnit: 'g',
     ingredients: [
-      ['Śmietanka 36%', 0.5, 'l'],
-      ['Cukier drobny', 50, 'g'],
-      ['Laska wanilii', 1, 'piece'],
+      { product: 'Śmietanka 36%', quantity: 0.5, unit: 'l' },
+      { product: 'Cukier drobny', quantity: 50, unit: 'g' },
+      { product: 'Laska wanilii', quantity: 1, unit: 'piece' },
     ],
     steps: [
       'Wyskrob ziarenka wanilii do zimnej śmietanki.',
       'Ubij śmietankę z cukrem do uzyskania miękkiej, puszystej konsystencji.',
     ],
+  },
+  {
+    // Uses the two recipes above: the whole tart base (by portions) and 300 g of cream (by weight).
+    name: 'Tarta z kremem chantilly',
+    description: 'Kruchy spód z kremem chantilly',
+    portions: 10,
+    ingredients: [
+      { recipe: 'Kruche ciasto na tartę', quantity: 10, unit: 'portion' },
+      { recipe: 'Krem chantilly', quantity: 300, unit: 'g' },
+    ],
+    steps: ['Wystudzony spód wypełnij kremem chantilly tuż przed podaniem.'],
   },
 ];
 
@@ -64,26 +77,35 @@ export async function seed(knex) {
     }
     const productIds = new Map(inserted.map((row) => [row.name, row.id]));
 
-    const recipeIds = [];
+    // Recipes are inserted in order, so a sub-recipe must come before the recipes that use it.
+    const recipeIds = new Map();
     for (const recipe of recipes) {
       const [{ id }] = await trx('recipes')
-        .insert({ name: recipe.name, description: recipe.description, portions: recipe.portions })
+        .insert({
+          name: recipe.name,
+          description: recipe.description,
+          portions: recipe.portions,
+          yield_quantity: recipe.yieldQuantity ?? null,
+          yield_unit: recipe.yieldUnit ?? null,
+        })
         .returning('id');
       await trx('recipe_ingredients').insert(
-        recipe.ingredients.map(([productName, quantity, unit], position) => ({
+        recipe.ingredients.map((line, position) => ({
           recipe_id: id,
-          product_id: productIds.get(productName),
+          product_id: line.product ? productIds.get(line.product) : null,
+          sub_recipe_id: line.recipe ? recipeIds.get(line.recipe) : null,
           position,
-          quantity,
-          unit,
+          quantity: line.quantity,
+          unit: line.unit,
         })),
       );
       await trx('recipe_steps').insert(recipe.steps.map((instruction, position) => ({ recipe_id: id, position, instruction })));
-      recipeIds.push(id);
+      recipeIds.set(recipe.name, id);
     }
 
-    await recalculateRecipeCosts(trx, recipeIds, { reason: 'created' });
-    for (const id of recipeIds) {
+    // Sub-recipes are calculated before the recipes that use them.
+    await recalculateRecipeCosts(trx, [...recipeIds.values()], { reason: 'created' });
+    for (const id of recipeIds.values()) {
       const after = await loadRecipeSnapshot(trx, id);
       await recordChange(trx, { entityType: 'recipe', entityId: id, entityName: after.name, before: null, after });
     }

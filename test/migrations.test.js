@@ -58,6 +58,9 @@ describe('migrations', () => {
 
   it('rebuilds the history tables without losing rows or links', async () => {
     const softDelete = { name: '20261010120000_recipe_soft_delete.js' };
+    // Later migrations build on this one, so they are rolled back first.
+    const subRecipes = { name: '20261011000000_sub_recipes.js' };
+    await db.migrate.down(subRecipes);
     await db.migrate.down(softDelete);
 
     const recipeId = await db('recipes').first('id').then((row) => row.id);
@@ -90,6 +93,7 @@ describe('migrations', () => {
     assert.equal((await db('change_log').where('id', effectId).first()).cause_change_id, null);
 
     // Rolling back maps the new values to the closest old ones.
+    await db.migrate.down(subRecipes);
     await db.migrate.down(softDelete);
     assert.equal((await db('change_log').where('id', restoredId).first()).action, 'updated');
     assert.equal((await db('recipe_cost_history').where('reason', 'recipe_updated')).length, 1);

@@ -10,6 +10,12 @@ export const UNITS = {
 
 export const UNIT_NAMES = Object.keys(UNITS);
 
+// A recipe's yield is a weight or a volume (count is what `portions` is for).
+export const YIELD_UNITS = UNIT_NAMES.filter((unit) => UNITS[unit].group !== 'count');
+
+// Units of a recipe ingredient line; 'portion' is only for sub-recipes.
+export const INGREDIENT_UNITS = [...UNIT_NAMES, 'portion'];
+
 // The unit that "price per unit" refers to, per group.
 const PRICING_UNITS = { mass: 'kg', volume: 'l', count: 'piece' };
 
@@ -24,12 +30,18 @@ export function unitGroup(unit) {
   return UNITS[unit].group;
 }
 
+// False for anything that isn't a product unit, such as 'portion'.
 export function areCompatible(unitA, unitB) {
-  return unitGroup(unitA) === unitGroup(unitB);
+  return Object.hasOwn(UNITS, unitA) && Object.hasOwn(UNITS, unitB) && unitGroup(unitA) === unitGroup(unitB);
 }
 
 export function compatibleUnits(unit) {
   return UNIT_NAMES.filter((name) => areCompatible(name, unit));
+}
+
+// Units a sub-recipe can be used in: portions always, weight or volume only if it has a yield.
+export function subRecipeUnits(yieldUnit) {
+  return ['portion', ...(yieldUnit ? compatibleUnits(yieldUnit) : [])];
 }
 
 export function pricingUnitFor(unit) {

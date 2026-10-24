@@ -6,7 +6,7 @@ Everything a web or mobile client needs to talk to the pastry chef backend (step
 - [TypeScript types](#typescript-types)
 - [Units](#units)
 - [Products](#products): [list](#list-products) · [get](#get-a-product) · [recipes using it](#recipes-that-use-a-product) · [create](#create-a-product) · [replace](#replace-a-product) · [update](#update-a-product) · [delete](#delete-a-product)
-- [Recipes](#recipes): [list](#list-recipes) · [get](#get-a-recipe) · [create](#create-a-recipe) · [replace](#replace-a-recipe) · [update](#update-a-recipe) · [delete](#delete-a-recipe) · [restore](#restore-a-recipe)
+- [Recipes](#recipes): [list](#list-recipes) · [get](#get-a-recipe) · [create](#create-a-recipe) · [replace](#replace-a-recipe) · [update](#update-a-recipe) · [delete](#delete-a-recipe) · [restore](#restore-a-recipe) · [sub-recipes](#sub-recipes) · [used in](#recipes-that-use-a-recipe)
 - [History](#history): [price and cost history](#price-and-cost-history) · [product price history](#product-price-history) · [recipe cost history](#recipe-cost-history) · [change log](#change-log) · [product and recipe change log](#product-and-recipe-change-log) · [change feed](#change-feed)
 - [Errors](#errors)
 - [UI flows and gotchas](#ui-flows-and-gotchas)
@@ -45,7 +45,9 @@ Status codes used:
 Copy these into the frontend. They describe exactly what the API sends and accepts.
 
 ```ts
-export type Unit = 'mg' | 'g' | 'kg' | 'ml' | 'l' | 'piece';
+export type Unit = 'mg' | 'g' | 'kg' | 'ml' | 'l' | 'piece';   // product units
+export type IngredientUnit = Unit | 'portion';                  // 'portion' only for sub-recipes
+export type YieldUnit = 'mg' | 'g' | 'kg' | 'ml' | 'l';         // a recipe's yield
 export type PricingUnit = 'kg' | 'l' | 'piece';
 
 export interface ListResponse<T> {
@@ -113,18 +115,25 @@ export interface RecipeSummary {
   foodCost: number;
   costPerPortion: number;
   sellPrice: number | null;
+  yieldQuantity: number | null;
+  yieldUnit: YieldUnit | null;
   ingredientCount: number;
   updatedAt: string;
 }
 
+// A line is a product or another recipe (a sub-recipe), see "Sub-recipes".
 export interface RecipeIngredient {
-  id: number;            // changes every time the ingredient list is saved - don't use as a stable key
-  productId: number;
-  productName: string;   // always the product's current name
+  id: number;                 // changes every time the ingredient list is saved - don't use as a stable key
+  type: 'product' | 'recipe';
+  productId: number | null;   // set when type is 'product'
+  productName: string | null; // always the product's current name
+  recipeId: number | null;    // set when type is 'recipe'
+  recipeName: string | null;  // always the sub-recipe's current name
+  name: string;               // productName or recipeName
   quantity: number;
-  unit: Unit;
-  unitPrice: number;     // price of 1 `unit` of the product, e.g. price per g
-  cost: number;          // quantity * unitPrice
+  unit: IngredientUnit;
+  unitPrice: number;          // price of 1 `unit`, e.g. per g, or per portion of a sub-recipe
+  cost: number;               // quantity * unitPrice
 }
 
 export interface Recipe {
@@ -135,16 +144,19 @@ export interface Recipe {
   foodCost: number;         // sum of ingredient costs
   costPerPortion: number;   // foodCost / portions
   sellPrice: number | null; // selling price of the whole recipe, if set
+  yieldQuantity: number | null; // what the whole recipe makes, e.g. 550 ...
+  yieldUnit: YieldUnit | null;  // ... g. Needed to use it in other recipes by weight or volume.
   ingredients: RecipeIngredient[];
   steps: string[];
   createdAt: string;
   updatedAt: string;
 }
 
-// An ingredient is EITHER an existing product OR a new product created on save.
+// An ingredient is an existing product, a new product created on save, or another recipe.
 export type IngredientInput =
   | { productId: number; quantity: number; unit: Unit }
-  | { product: ProductInput; quantity: number; unit: Unit };
+  | { product: ProductInput; quantity: number; unit: Unit }
+  | { recipeId: number; quantity: number; unit: IngredientUnit };
 
 // POST /recipes, PUT /recipes/:id
 export interface RecipeInput {
@@ -152,6 +164,8 @@ export interface RecipeInput {
   description?: string | null;
   portions: number;
   sellPrice?: number | null;       // default null
+  yieldQuantity?: number | null;   // default null; set together with yieldUnit
+  yieldUnit?: YieldUnit | null;    // default null
   ingredients?: IngredientInput[]; // default []
   steps?: string[];                // default []
 }
@@ -193,8 +207,9 @@ export interface CostSnapshot {
 export interface RecipeCostChange extends CostSnapshot {
   id: number;
   changedAt: string;
-  reason: 'created' | 'recipe_updated' | 'recipe_restored' | 'product_price_changed';
+  reason: 'created' | 'recipe_updated' | 'recipe_restored' | 'product_price_changed' | 'sub_recipe_changed';
   previous: CostSnapshot | null; // null for the first entry
+  subRecipe: { id: number; name: string } | null; // the sub-recipe that passed the change on, if any
   cause: {                       // set when reason is 'product_price_changed', otherwise null
     priceChangeId: number;       // id of the matching entry in the product's price history
     productId: number | null;    // null if the product has been deleted since
@@ -212,15 +227,14 @@ export interface RecipeCostChange extends CostSnapshot {
 export type ProductField =
   | 'name' | 'description' | 'manufacturer' | 'packageSize' | 'packageUnit'
   | 'pricePerPackage' | 'pricePerUnit' | 'inventoryQuantity';
-export type RecipeField = 'name' | 'description' | 'portions' | 'sellPrice' | 'ingredients' | 'steps' | 'foodCost';
+export type RecipeField =
+  | 'name' | 'description' | 'portions' | 'sellPrice' | 'yieldQuantity' | 'yieldUnit'
+  | 'ingredients' | 'steps' | 'foodCost';
 
 // One line of a recipe's ingredient list as it was at the time of the change.
-export interface IngredientSnapshot {
-  productId: number;
-  productName: string;
-  quantity: number;
-  unit: Unit;
-}
+export type IngredientSnapshot =
+  | { productId: number; productName: string; quantity: number; unit: Unit }
+  | { recipeId: number; recipeName: string; quantity: number; unit: IngredientUnit };
 
 export interface FieldChange {
   field: ProductField | RecipeField;
@@ -259,6 +273,7 @@ export type ErrorCode =
   | 'PRODUCT_IN_USE'
   | 'UNIT_CONFLICT'
   | 'RECIPE_NOT_DELETED'
+  | 'RECIPE_IN_USE'
   | 'INTERNAL_ERROR';
 
 export interface ValidationIssue {
@@ -288,6 +303,8 @@ export interface ApiError {
 
 **Rule:** a recipe can only use a product in a unit of the same kind as its `packageUnit`. Butter bought in `g` can be used in `mg`, `g` or `kg`, but never in `ml` or `piece`. Converting between weight and volume is not supported.
 
+**Sub-recipes** use one more unit, `portion`. They can also be used in units of the same kind as their yield, if they have one. See [Sub-recipes](#sub-recipes).
+
 Helpers you can reuse in the frontend. They match the backend's maths exactly:
 
 ```ts
@@ -312,6 +329,19 @@ export function convert(quantity: number, from: Unit, to: Unit): number {
 // Live cost preview in the recipe editor, before saving.
 export function ingredientCost(product: Product, quantity: number, unit: Unit): number {
   const unitPrice = product.pricePerPackage / convert(product.packageSize, product.packageUnit, unit);
+  return quantity * unitPrice;
+}
+
+// Units to offer when the ingredient is another recipe.
+export function subRecipeUnits(recipe: Recipe | RecipeSummary): IngredientUnit[] {
+  return ['portion', ...(recipe.yieldUnit ? compatibleUnits(recipe.yieldUnit) : [])];
+}
+
+// Live cost preview for a sub-recipe line.
+export function subRecipeCost(recipe: Recipe | RecipeSummary, quantity: number, unit: IngredientUnit): number {
+  const unitPrice = unit === 'portion'
+    ? recipe.foodCost / recipe.portions
+    : recipe.foodCost / convert(recipe.yieldQuantity!, recipe.yieldUnit!, unit);
   return quantity * unitPrice;
 }
 ```
@@ -429,7 +459,7 @@ How fields combine with what is already stored:
 | `description: null` | Clears the description. The same applies to `manufacturer`. |
 | `inventoryQuantity` | Just updates the stock. Recipes are not touched. |
 
-**Recipe recalculation.** If the change affects the product's price (`pricePerPackage`, `pricePerUnit`, `packageSize` or `packageUnit`), every recipe using the product is recalculated in the same request. Those recipes come back in `recalculatedRecipes`, sorted by name. Changing only the name, description, manufacturer or inventory recalculates nothing (`recalculatedRecipes: []`). A renamed product shows its new name in recipes straight away.
+**Recipe recalculation.** If the change affects the product's price (`pricePerPackage`, `pricePerUnit`, `packageSize` or `packageUnit`), every recipe using the product is recalculated in the same request, including recipes that use it through [sub-recipes](#sub-recipes). Those recipes come back in `recalculatedRecipes`, sorted by name. Changing only the name, description, manufacturer or inventory recalculates nothing (`recalculatedRecipes: []`). A renamed product shows its new name in recipes straight away.
 
 Response `200`: `ProductUpdateResult`
 
@@ -541,6 +571,8 @@ Response `200`: `Recipe` (example under [Create a recipe](#create-a-recipe)). Er
 | `description` | string \| null | no | max 5000 |
 | `portions` | integer | yes | ≥ 1 |
 | `sellPrice` | number \| null | no | ≥ 0, default `null`. Selling price of the **whole recipe** (the same scope as `foodCost`). |
+| `yieldQuantity` | number \| null | no | > 0, default `null`. What the whole recipe makes, e.g. `550`. Set together with `yieldUnit`. |
+| `yieldUnit` | `YieldUnit` \| null | no | `mg`, `g`, `kg`, `ml` or `l`, default `null`. Lets other recipes use this one by weight or volume. |
 | `ingredients` | `IngredientInput[]` | no | max 200, default `[]`. Order is kept. |
 | `steps` | string[] | no | max 100, each 1–5000 characters, default `[]`. Order is kept. |
 
@@ -548,12 +580,15 @@ Each ingredient:
 
 | Field | Type | Rules |
 |---|---|---|
-| `productId` | integer | An existing product. Send this **or** `product`. |
+| `productId` | integer | An existing product. |
 | `product` | `ProductInput` | A new product, created when the recipe is saved. Same rules as [Create a product](#create-a-product). |
+| `recipeId` | integer | Another recipe, used as a [sub-recipe](#sub-recipes). |
 | `quantity` | number | > 0 |
-| `unit` | `Unit` | Must be the same kind as the product's `packageUnit` (see [Units](#units)). |
+| `unit` | `IngredientUnit` | For products: the same kind as the product's `packageUnit` (see [Units](#units)). For sub-recipes: `portion`, or the same kind as the sub-recipe's `yieldUnit`. |
 
-The same product may appear more than once, for example butter in both the dough and the crumble.
+Send exactly one of `productId`, `product` and `recipeId`. `null` counts as not sent, so lines from a GET can be sent back as they are.
+
+The same product or sub-recipe may appear more than once, for example butter in both the dough and the crumble.
 
 The whole save is one transaction. If any ingredient is invalid, nothing is saved, including new inline products.
 
@@ -592,9 +627,17 @@ Response `201` with `Location: /api/v1/recipes/3`, body `Recipe`:
   "foodCost": 15.6,
   "costPerPortion": 2.6,
   "sellPrice": 45,
+  "yieldQuantity": null,
+  "yieldUnit": null,
   "ingredients": [
-    { "id": 8, "productId": 5, "productName": "Cream 36%", "quantity": 200, "unit": "ml", "unitPrice": 0.018, "cost": 3.6 },
-    { "id": 9, "productId": 7, "productName": "Dark chocolate 70%", "quantity": 200, "unit": "g", "unitPrice": 0.06, "cost": 12 }
+    {
+      "id": 8, "type": "product", "productId": 5, "productName": "Cream 36%", "recipeId": null, "recipeName": null,
+      "name": "Cream 36%", "quantity": 200, "unit": "ml", "unitPrice": 0.018, "cost": 3.6
+    },
+    {
+      "id": 9, "type": "product", "productId": 7, "productName": "Dark chocolate 70%", "recipeId": null, "recipeName": null,
+      "name": "Dark chocolate 70%", "quantity": 200, "unit": "g", "unitPrice": 0.06, "cost": 12
+    }
   ],
   "steps": ["Bring the cream to a simmer.", "Pour over the chocolate and emulsify."],
   "createdAt": "2026-10-08T09:12:42.000Z",
@@ -625,7 +668,13 @@ Other ingredient errors you may see:
 | Path | Message |
 |---|---|
 | `body.ingredients[i].productId` | `Product 99 does not exist` |
-| `body.ingredients[i].productId` | `Provide exactly one of productId (existing product) or product (new product)` |
+| `body.ingredients[i].productId` | `Provide exactly one of productId (existing product), product (new product) or recipeId (another recipe)` |
+| `body.ingredients[i].recipeId` | `Recipe 99 does not exist` (also for deleted recipes) |
+| `body.ingredients[i].recipeId` | `A recipe cannot use itself` |
+| `body.ingredients[i].recipeId` | `"Tart" already uses this recipe, so this recipe cannot use it` |
+| `body.ingredients[i].unit` | `"Krem chantilly" yields 550 g, so the unit must be one of: portion, mg, g, kg` |
+| `body.ingredients[i].unit` | `"Glaze" has no yield, so it can only be used in portions` |
+| `body.yieldUnit` | `Set yieldQuantity and yieldUnit together, or neither` |
 | `body.ingredients[i].product.pricePerPackage` | `Provide pricePerPackage or pricePerUnit` |
 | `body.ingredients[i].quantity` | `Too small: expected number to be >0` |
 
@@ -633,29 +682,34 @@ Other ingredient errors you may see:
 
 `PUT /recipes/:id` with body `RecipeInput` (same rules as create)
 
-Replaces everything. If you leave out `description`, `sellPrice`, `ingredients` or `steps`, they become `null`, `null`, `[]` and `[]`. A `Recipe` from a GET can be sent back as is: extra fields such as `id`, `productName` and `cost` are ignored.
+Replaces everything. If you leave out `description`, `sellPrice`, `yieldQuantity`/`yieldUnit`, `ingredients` or `steps`, they become `null`, `null`, `null`, `[]` and `[]`. A `Recipe` from a GET can be sent back as is: extra fields such as `id`, `productName` and `cost` are ignored.
 
-Response `200`: `Recipe`. Errors: `400`, `404`.
+Response `200`: `Recipe`. Errors: `400`, `404`, `409 UNIT_CONFLICT` (see below).
 
 ### Update a recipe
 
 `PATCH /recipes/:id` with body `RecipePatch`
 
-- Fields you don't send stay unchanged. Send `null` to clear `description` or `sellPrice`.
+- Fields you don't send stay unchanged. Send `null` to clear `description` or `sellPrice`, and `null` for both `yieldQuantity` and `yieldUnit` to remove the yield.
 - `ingredients` and `steps` are lists. If you send one, it **replaces the whole stored list**, so always send the complete list, not just the changed line.
-- Food cost is recalculated on every save.
+- Food cost is recalculated on every save. If other recipes use this one, they are recalculated too (see [Sub-recipes](#sub-recipes)).
 
 ```json
 { "portions": 12 }
 ```
 
-Response `200`: `Recipe`. Errors: `400`, `404`.
+Response `200`: `Recipe`. Errors:
+- `400`
+- `404`
+- `409 UNIT_CONFLICT`: the yield was removed or changed to another kind (e.g. `g` → `ml`) while other recipes use this one by weight or volume. `details.recipes` lists them. A change within the same kind (`300 g` → `0.3 kg`) is always allowed.
 
 ### Delete a recipe
 
 `DELETE /recipes/:id`
 
-Response `204` with no body. Errors: `404 NOT_FOUND`, also when the recipe is already deleted.
+Response `204` with no body. Errors:
+- `404 NOT_FOUND`, also when the recipe is already deleted.
+- `409 RECIPE_IN_USE`: other recipes use this one as a sub-recipe. Nothing is deleted. `details.recipes` lists them, and the user has to remove it from those recipes, or delete them, first. Deleted recipes don't count.
 
 This is a **soft delete**. The recipe keeps its ingredients, steps and cost history and can be [restored](#restore-a-recipe). While deleted, it behaves as if it doesn't exist:
 - `GET`, `PUT`, `PATCH` and `DELETE /recipes/:id` and `GET /recipes/:id/cost-history` return `404`, and `GET /recipes` doesn't list it.
@@ -674,18 +728,17 @@ Ingredient lines that can no longer be used are left out and reported in `droppe
 | `reason` | When |
 |---|---|
 | `product_deleted` | The product was deleted while the recipe was deleted. |
-| `unit_incompatible` | The product's unit changed to another kind (e.g. `g` → `piece`) while the recipe was deleted. |
+| `recipe_deleted` | The sub-recipe was deleted while the recipe was deleted. |
+| `unit_incompatible` | The product's unit changed to another kind (e.g. `g` → `piece`), or the sub-recipe's yield was removed or changed to another kind, while the recipe was deleted. |
 
 Response `200`: `RestoreRecipeResult`
 
 ```ts
-export interface DroppedIngredient {
-  productId: number;
-  productName: string; // name at the time the recipe was deleted (or now, for unit_incompatible)
-  quantity: number;
-  unit: Unit;
-  reason: 'product_deleted' | 'unit_incompatible';
-}
+// A product line ({ productId, productName, ... }) or a sub-recipe line ({ recipeId, recipeName, ... }).
+// The name is the one from when the recipe was deleted (or the current one, for unit_incompatible).
+export type DroppedIngredient = IngredientSnapshot & {
+  reason: 'product_deleted' | 'recipe_deleted' | 'unit_incompatible';
+};
 
 export interface RestoreRecipeResult {
   recipe: Recipe;
@@ -707,6 +760,57 @@ The restore is logged in the change log with `action: 'restored'`. Its `changes`
 Errors:
 - `404 NOT_FOUND`: no such recipe. Recipes deleted before soft delete was added are gone for good.
 - `409 RECIPE_NOT_DELETED`: the recipe isn't deleted.
+
+### Sub-recipes
+
+A recipe can use other recipes as ingredients, e.g. a tart made of a tart base and a cream. Add the line with `recipeId` instead of `productId`. Sub-recipes can contain sub-recipes themselves, to any depth.
+
+**How a sub-recipe is measured**
+
+| Unit | Price of one unit | Example ("Krem chantilly": food cost 18.23, 8 portions, yield 550 g) |
+|---|---|---|
+| `portion` | `foodCost / portions` | 2 portions = 2 × 2.28 = 4.56 |
+| same kind as `yieldUnit` | `foodCost / yield` | 300 g = 18.23 / 550 g × 300 g = 9.94 |
+
+Every recipe can be used in portions. Using it by weight or volume needs its yield: what the whole recipe makes, weighed or measured by the chef (e.g. `yieldQuantity: 550, yieldUnit: "g"`). The yield is never calculated from the ingredients, because cooking changes weight and ingredients can mix grams with millilitres.
+
+```json
+{
+  "name": "Tarta z kremem chantilly",
+  "portions": 10,
+  "ingredients": [
+    { "recipeId": 1, "quantity": 10, "unit": "portion" },
+    { "recipeId": 2, "quantity": 300, "unit": "g" }
+  ]
+}
+```
+
+A sub-recipe line in the response:
+
+```json
+{
+  "id": 14, "type": "recipe", "productId": null, "productName": null, "recipeId": 2, "recipeName": "Krem chantilly",
+  "name": "Krem chantilly", "quantity": 300, "unit": "g", "unitPrice": 0.033136, "cost": 9.94
+}
+```
+
+**Costs flow up.** When anything changes the cost of a sub-recipe, every recipe that uses it is recalculated in the same request, level by level. That includes a product price, the sub-recipe's ingredients, its portions or its yield. A recipe that uses a product both directly and through a sub-recipe is recalculated once, with both changes.
+- `PUT`/`PATCH /products/:id` returns every recalculated recipe in `recalculatedRecipes`: the ones using the product directly, and the ones above them whose cost changed.
+- Cost history: recipes above the first level get reason `product_price_changed` (with the product in `cause`) when a product price started it, otherwise `sub_recipe_changed`. `subRecipe` names the sub-recipe the change came through.
+- Change log: each level's `foodCost` entry points to the level below in `triggeredBy`, so you can follow product → cream → tart.
+
+**Rules**
+- **No loops.** A recipe can't use itself, directly or through other recipes. The API returns `400`.
+- **In-use recipes can't be deleted.** You get `409 RECIPE_IN_USE`, the same as deleting a product in use.
+- **Yield changes must still fit.** Removing the yield, or changing its kind, while recipes use the sub-recipe by weight or volume returns `409 UNIT_CONFLICT`.
+- **Deleted recipes can't be added** as sub-recipes. Restoring a recipe whose sub-recipe was deleted meanwhile drops that line (`recipe_deleted`).
+- **No inline creation.** You can't create a sub-recipe while saving another recipe. Create it first, then use its id.
+
+### Recipes that use a recipe
+
+`GET /recipes/:id/used-in`
+
+Response `200`: `ListResponse<RecipeRef>`, the (non-deleted) recipes that use this one as a sub-recipe directly. Useful before deleting a recipe or changing its yield. Errors: `404 NOT_FOUND`.
 
 ---
 
@@ -734,6 +838,8 @@ What creates an entry:
 | Recipe saved and its food cost or portions changed | – | `recipe_updated` |
 | Recipe saved without changing cost or portions (e.g. renamed, steps edited) | – | – |
 | Recipe restored and its food cost changed meanwhile | – | `recipe_restored` |
+| A sub-recipe's cost, portions or yield changed, changing this recipe's cost | – | `sub_recipe_changed` (with `subRecipe`) |
+| A product price change reached this recipe through a sub-recipe | – | `product_price_changed` (with `cause` and `subRecipe`) |
 
 More details:
 - A package change that leaves every recipe cost unchanged (e.g. 200 g → 0.2 kg at the same price) creates a product entry, but no recipe entries.
@@ -849,7 +955,8 @@ Tracked fields and their value types:
 | recipe | `name`, `description` | `string \| null` |
 | recipe | `portions` | `number` |
 | recipe | `sellPrice` | `number \| null`, rounded to 2 decimals |
-| recipe | `ingredients` | `IngredientSnapshot[]`: the whole list before and after |
+| recipe | `yieldQuantity` / `yieldUnit` | `number \| null` / `YieldUnit \| null` |
+| recipe | `ingredients` | `IngredientSnapshot[]`: the whole list before and after; sub-recipe lines have `recipeId` and `recipeName` |
 | recipe | `steps` | `string[]`: the whole list before and after |
 | recipe | `foodCost` | `number`, rounded to 2 decimals |
 
@@ -858,6 +965,7 @@ Not tracked: `costPerPortion` (it's `foodCost / portions`), per-line `unitPrice`
 How changes relate:
 - **A recipe edit** is one entry with all of its changes, e.g. `ingredients` together with the resulting `foodCost`.
 - **A product price change** is one product entry. Each recipe whose food cost changed because of it gets its own entry with only `foodCost`. The recipe entry points to the product entry in `triggeredBy`, and the product entry lists the recipe entries in `triggered`.
+- **Sub-recipes pass changes on.** When a sub-recipe's change (an edit, or a product price change it received) changes the cost of recipes that use it, each of those recipes gets a `foodCost` entry whose `triggeredBy` is the sub-recipe's entry. Follow `triggeredBy` to walk down the chain, and `triggered` to walk up.
 - **Renaming a product** is logged on the product only. Recipe entries keep `productName` as it was when the recipe changed.
 - **Deleted products and recipes** keep their log: their change log endpoints still work, and the entries appear in the [change feed](#change-feed).
 - **Failed saves** log nothing.
@@ -1013,8 +1121,9 @@ Every error has the same shape:
 | 400 | `BAD_REQUEST` | none | Malformed JSON (status 413 if the body is over 1 MB). |
 | 404 | `NOT_FOUND` | none | Unknown id (`"Product 99 not found"`) or route. |
 | 409 | `PRODUCT_IN_USE` | `{ recipes: RecipeRef[] }` | Deleting a product that recipes use. |
-| 409 | `UNIT_CONFLICT` | `{ recipes: RecipeRef[] }` | Changing a product's unit kind while recipes use it. |
+| 409 | `UNIT_CONFLICT` | `{ recipes: RecipeRef[] }` | Changing a product's unit kind, or removing or changing the kind of a recipe's yield, while recipes use it that way. |
 | 409 | `RECIPE_NOT_DELETED` | none | Restoring a recipe that isn't deleted. |
+| 409 | `RECIPE_IN_USE` | `{ recipes: RecipeRef[] }` | Deleting a recipe that other recipes use as a sub-recipe. |
 | 500 | `INTERNAL_ERROR` | none | Unexpected server error. |
 
 **Mapping issues to form fields.** `path` starts with where the problem is: `body.`, `params.` or `query.`. Strip `body.` to get the form field:
@@ -1040,7 +1149,11 @@ Messages written for this app ("must be one of: mg, g, kg", "Provide pricePerPac
 
 **Product form: inventory.** `inventoryQuantity` is in `packageUnit`, so show the unit next to the input: "1000 g".
 
-**Ingredient unit picker.** After a product is chosen, offer only `compatibleUnits(product.packageUnit)` (see [Units](#units)). That avoids the unit validation error altogether.
+**Ingredient unit picker.** After a product is chosen, offer only `compatibleUnits(product.packageUnit)` (see [Units](#units)). For a sub-recipe, offer `subRecipeUnits(recipe)`: `portion`, plus weight or volume units if it has a yield. That avoids the unit validation error altogether.
+
+**Ingredient picker with recipes.** Let the user pick from products and from recipes (`GET /recipes`). Leave out the recipe being edited and, ideally, recipes that already use it. Otherwise the API rejects the loop with a `400` you can show. Render lines by `type`, using `name` for the label. If a recipe has no yield, you can suggest adding one so it can be used in grams.
+
+**After saving a recipe that others use,** their costs have changed too. Invalidate cached recipes and recipe lists, not just the edited recipe.
 
 **"Add new product" inside the recipe editor.** Collect the product fields in a small dialog and put them in the ingredient as `product: { ... }` instead of `productId`. The product is created only when the recipe is saved successfully. If you would rather create it immediately, call `POST /products` first and use the returned `id` as `productId`.
 
@@ -1092,7 +1205,7 @@ export function diffIngredients(from: IngredientSnapshot[] | null, to: Ingredien
 ## Not supported yet
 
 - Login and per-user data (everything is shared for now).
-- Using another recipe as an ingredient, such as a cream inside a cake.
+- Creating a sub-recipe inline while saving another recipe.
 - Converting between weight and volume (g ↔ ml).
 - Pagination and sort options (lists are sorted by name).
 - Photos.

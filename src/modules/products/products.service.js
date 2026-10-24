@@ -68,7 +68,8 @@ export async function createProduct(data) {
 /**
  * Replaces (PUT) or patches (PATCH) a product and logs the changed fields. When anything that
  * affects its price changes, the change also goes into the price history and every recipe using
- * the product is recalculated; their food cost changes are logged as caused by this change.
+ * the product (directly or through sub-recipes) is recalculated; their food cost changes are
+ * logged as caused by this change.
  */
 export async function updateProduct(id, data, { partial = false } = {}) {
   return db.transaction(async (trx) => {
@@ -106,20 +107,13 @@ export async function updateProduct(id, data, { partial = false } = {}) {
     if (priceChanged) {
       const priceChangeId = await recordProductPriceChange(trx, { product: updated, previous: current, reason: 'updated' });
       const usages = await trx('recipe_ingredients').where('product_id', id).distinct('recipe_id');
+      // Also recalculates recipes that use those recipes as sub-recipes, and logs every food
+      // cost change as caused by this product change.
       recalculated = await recalculateRecipeCosts(trx, usages.map((usage) => usage.recipe_id), {
         reason: 'product_price_changed',
         productPriceChangeId: priceChangeId,
+        causeChangeId: changeId,
       });
-      for (const recipe of recalculated) {
-        await recordChange(trx, {
-          entityType: 'recipe',
-          entityId: recipe.id,
-          entityName: recipe.name,
-          before: { foodCost: round2(recipe.previousFoodCost) },
-          after: { foodCost: round2(recipe.foodCost) },
-          causeChangeId: changeId,
-        });
-      }
     }
 
     return {
