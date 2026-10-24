@@ -1,4 +1,4 @@
-// Demo data for local development: npm run seed (replaces all existing data).
+// Demo data for local development: SEED_USER_ID=<user id> npm run seed (replaces that user's data).
 import { recordChange, recordProductPriceChange } from '../../modules/history/history.recorder.js';
 import { loadRecipeSnapshot, productSnapshot } from '../../modules/history/snapshots.js';
 import { toProductRow } from '../../modules/products/products.mapper.js';
@@ -61,27 +61,36 @@ const recipes = [
 ];
 
 export async function seed(knex) {
-  await knex.transaction(async (trx) => {
-    await trx('recipe_cost_history').del();
-    await trx('product_price_history').del();
-    await trx('change_log').del();
-    await trx('recipe_steps').del();
-    await trx('recipe_ingredients').del();
-    await trx('recipes').del();
-    await trx('products').del();
+  const userId = process.env.SEED_USER_ID;
+  if (!userId) throw new Error('Set SEED_USER_ID to the user id (Supabase Auth) that should get the demo data.');
 
-    const inserted = await trx('products').insert(products.map((product) => toProductRow(product))).returning('*');
+  await knex.transaction(async (trx) => {
+    // Children first: recipe lines point at products and other recipes with ON DELETE RESTRICT.
+    const recipeIds = trx('recipes').where('user_id', userId).select('id');
+    const productIds = trx('products').where('user_id', userId).select('id');
+    await trx('recipe_cost_history').whereIn('recipe_id', recipeIds).del();
+    await trx('recipe_steps').whereIn('recipe_id', recipeIds).del();
+    await trx('recipe_ingredients').whereIn('recipe_id', recipeIds).del();
+    await trx('product_price_history').whereIn('product_id', productIds).del();
+    await trx('change_log').where('user_id', userId).del();
+    await trx('recipes').where('user_id', userId).del();
+    await trx('products').where('user_id', userId).del();
+
+    const inserted = await trx('products')
+      .insert(products.map((product) => ({ ...toProductRow(product), user_id: userId })))
+      .returning('*');
     for (const product of inserted) {
       await recordProductPriceChange(trx, { product, reason: 'created' });
-      await recordChange(trx, { entityType: 'product', entityId: product.id, entityName: product.name, before: null, after: productSnapshot(product) });
+      await recordChange(trx, { userId, entityType: 'product', entityId: product.id, entityName: product.name, before: null, after: productSnapshot(product) });
     }
-    const productIds = new Map(inserted.map((row) => [row.name, row.id]));
+    const productIdByName = new Map(inserted.map((row) => [row.name, row.id]));
 
     // Recipes are inserted in order, so a sub-recipe must come before the recipes that use it.
-    const recipeIds = new Map();
+    const recipeIdByName = new Map();
     for (const recipe of recipes) {
       const [{ id }] = await trx('recipes')
         .insert({
+          user_id: userId,
           name: recipe.name,
           description: recipe.description,
           portions: recipe.portions,
@@ -92,22 +101,22 @@ export async function seed(knex) {
       await trx('recipe_ingredients').insert(
         recipe.ingredients.map((line, position) => ({
           recipe_id: id,
-          product_id: line.product ? productIds.get(line.product) : null,
-          sub_recipe_id: line.recipe ? recipeIds.get(line.recipe) : null,
+          product_id: line.product ? productIdByName.get(line.product) : null,
+          sub_recipe_id: line.recipe ? recipeIdByName.get(line.recipe) : null,
           position,
           quantity: line.quantity,
           unit: line.unit,
         })),
       );
       await trx('recipe_steps').insert(recipe.steps.map((instruction, position) => ({ recipe_id: id, position, instruction })));
-      recipeIds.set(recipe.name, id);
+      recipeIdByName.set(recipe.name, id);
     }
 
     // Sub-recipes are calculated before the recipes that use them.
-    await recalculateRecipeCosts(trx, [...recipeIds.values()], { reason: 'created' });
-    for (const id of recipeIds.values()) {
+    await recalculateRecipeCosts(trx, [...recipeIdByName.values()], { reason: 'created' });
+    for (const id of recipeIdByName.values()) {
       const after = await loadRecipeSnapshot(trx, id);
-      await recordChange(trx, { entityType: 'recipe', entityId: id, entityName: after.name, before: null, after });
+      await recordChange(trx, { userId, entityType: 'recipe', entityId: id, entityName: after.name, before: null, after });
     }
   });
 }

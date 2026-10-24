@@ -8,10 +8,15 @@ Stack: Node.js 24, Express 5, Knex, Zod. SQLite locally, PostgreSQL (Supabase) i
 
 ```bash
 npm install
-npm run migrate   # create tables in data/dev.sqlite3
-npm run seed      # optional: demo products and 2 recipes (replaces all data)
-npm run dev       # http://localhost:3000, restarts on file changes
+cp .env.example .env   # then set SUPABASE_URL (required, see Login below)
+npm run migrate        # create tables in data/dev.sqlite3
+npm run dev            # http://localhost:3000, restarts on file changes
+SEED_USER_ID=<your user id> npm run seed   # optional: demo data for one user (replaces that user's data)
 ```
+
+## Login
+
+Users log in with Google through Supabase Auth in the web app. Every `/api/v1` request carries the Supabase access token (`Authorization: Bearer ...`), and the API checks it against the public keys of the project in `SUPABASE_URL`. Each user's products, recipes and history are theirs alone; `/health` is public. Your user id (for `SEED_USER_ID`) is under Authentication → Users in the Supabase dashboard.
 
 | Script | What it does |
 |---|---|
@@ -19,7 +24,7 @@ npm run dev       # http://localhost:3000, restarts on file changes
 | `npm start` | Start |
 | `npm test` | Run all tests (in-memory SQLite, nothing to set up) |
 | `npm run migrate` / `migrate:rollback` | Apply / undo database migrations |
-| `npm run seed` | Load demo data |
+| `npm run seed` | Load demo data for `SEED_USER_ID` |
 
 Configuration is read from environment variables or a `.env` file. See [.env.example](.env.example).
 
@@ -82,12 +87,14 @@ Quick overview (base path `/api/v1`, except `/health`):
 | DELETE | `/recipes/:id` | Soft delete (204). The recipe is hidden but keeps its data |
 | POST | `/recipes/:id/restore` | Restore a deleted recipe, recalculated with current prices. Returns `{ recipe, droppedIngredients }` |
 
-## Deploying later
+## Deployment
 
-SQLite is fine locally. Most hosts wipe the disk on every deploy, so production should use a managed PostgreSQL. Supabase works well and later also offers login (Supabase Auth) and file storage (recipe photos).
+Production: the API on Render, the database and login on Supabase, the web app on Vercel. A push to `master` runs the tests in GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)), and Render deploys only when they pass.
 
-1. Create a Supabase project. In **Connect**, copy the **Session pooler** connection string (it works over IPv4).
-2. Host the API on Render, Railway or Fly.io, and set `DATABASE_URL` to that connection string (and `CORS_ORIGIN` to the web app's URL).
-3. Run `npm run migrate` once against that database, then `npm start`.
+1. **Supabase.** Create a project (EU region). In **Connect**, copy the **Session pooler** connection string (the direct connection is IPv6-only, which Render can't reach). Set up Google login: Authentication → Providers → Google, with an OAuth client from Google Cloud Console whose redirect URI is `https://<project-ref>.supabase.co/auth/v1/callback`.
+2. **Render.** New → Blueprint → this repo. [render.yaml](render.yaml) defines the service; fill in `DATABASE_URL`, `SUPABASE_URL` and `CORS_ORIGIN` when asked. Migrations run on every start (`npm run migrate && npm start`).
+3. Check `https://<service>.onrender.com/health`.
 
-No code changes are needed: the same migrations and queries run on both databases. Note that free Supabase projects pause after a week of inactivity.
+The migration that added user accounts turns on row level security (with no policies) for every table, so Supabase's public REST API can't read the data with the anon key. Tables added later need `alter table <name> enable row level security` in their migration too.
+
+The free Render plan sleeps after 15 minutes without requests, so the first request after that takes about 30 seconds. Free Supabase projects pause after a week of inactivity.
