@@ -57,14 +57,15 @@ function toRecipeDto(recipe, ingredients, steps) {
 }
 
 // Deleted recipes are treated as missing everywhere except restore and the change log.
-async function findRecipeRow(executor, id) {
-  const row = await executor('recipes').where({ id }).whereNull('deleted_at').first();
+// Another user's recipe is reported as missing, the same as one that doesn't exist.
+async function findRecipeRow(executor, userId, id) {
+  const row = await executor('recipes').where({ id, user_id: userId }).whereNull('deleted_at').first();
   if (!row) throw new NotFoundError('Recipe', id);
   return row;
 }
 
-async function loadRecipe(executor, id) {
-  const recipe = await findRecipeRow(executor, id);
+async function loadRecipe(executor, userId, id) {
+  const recipe = await findRecipeRow(executor, userId, id);
   const ingredients = await executor('recipe_ingredients as ri')
     .leftJoin('products as p', 'p.id', 'ri.product_id')
     .leftJoin('recipes as s', 's.id', 'ri.sub_recipe_id')
@@ -138,7 +139,8 @@ async function checkSubRecipeLine(trx, recipeId, index, ingredient, subRecipe) {
 }
 
 // Creates inline products, checks every line and stores the list. Costs are filled in by recalculateRecipeCosts.
-async function replaceIngredients(trx, recipeId, ingredients) {
+// Products and sub-recipes must belong to `userId`; anyone else's are reported as missing.
+async function replaceIngredients(trx, userId, recipeId, ingredients) {
   await trx('recipe_ingredients').where('recipe_id', recipeId).del();
 
   const rows = [];
@@ -147,7 +149,7 @@ async function replaceIngredients(trx, recipeId, ingredients) {
     const line = { recipe_id: recipeId, position: index, quantity: ingredient.quantity, unit: ingredient.unit };
 
     if (ingredient.recipeId != null) {
-      const subRecipe = await trx('recipes').where('id', ingredient.recipeId).whereNull('deleted_at').first();
+      const subRecipe = await trx('recipes').where({ id: ingredient.recipeId, user_id: userId }).whereNull('deleted_at').first();
       const issue = await checkSubRecipeLine(trx, recipeId, index, ingredient, subRecipe);
       if (issue) issues.push(issue);
       else rows.push({ ...line, product_id: null, sub_recipe_id: subRecipe.id });
@@ -155,8 +157,8 @@ async function replaceIngredients(trx, recipeId, ingredients) {
     }
 
     const product = ingredient.product
-      ? await insertProduct(trx, ingredient.product)
-      : await trx('products').where('id', ingredient.productId).first();
+      ? await insertProduct(trx, userId, ingredient.product)
+      : await trx('products').where({ id: ingredient.productId, user_id: userId }).first();
     if (!product) {
       issues.push({ path: `body.ingredients[${index}].productId`, message: `Product ${ingredient.productId} does not exist` });
     } else if (!areCompatible(ingredient.unit, product.package_unit)) {
@@ -210,31 +212,36 @@ async function checkYieldStillFits(trx, recipe, newYieldUnit) {
   }
 }
 
-export async function listRecipes({ search } = {}) {
+export async function listRecipes(userId, { search } = {}) {
   const ingredientCount = db('recipe_ingredients as ri')
     .count('*')
     .where('ri.recipe_id', db.ref('r.id'))
     .as('ingredient_count');
-  const query = db('recipes as r').whereNull('r.deleted_at').select('r.*', ingredientCount).orderBy('r.name');
+  const query = db('recipes as r')
+    .where('r.user_id', userId)
+    .whereNull('r.deleted_at')
+    .select('r.*', ingredientCount)
+    .orderBy('r.name');
   if (search) query.whereRaw('lower(r.name) like ?', [`%${search.toLowerCase()}%`]);
   const rows = await query;
   return rows.map(toRecipeSummaryDto);
 }
 
-export async function getRecipe(id) {
-  return loadRecipe(db, id);
+export async function getRecipe(userId, id) {
+  return loadRecipe(db, userId, id);
 }
 
-export async function listRecipesUsingThisRecipe(id) {
-  await findRecipeRow(db, id);
+export async function listRecipesUsingThisRecipe(userId, id) {
+  await findRecipeRow(db, userId, id);
   return recipesUsingRecipe(db, id);
 }
 
-export async function createRecipe(data) {
+export async function createRecipe(userId, data) {
   checkYield(data.yieldQuantity, data.yieldUnit);
   return db.transaction(async (trx) => {
     const [{ id }] = await trx('recipes')
       .insert({
+        user_id: userId,
         name: data.name,
         description: data.description ?? null,
         portions: data.portions,
@@ -243,18 +250,18 @@ export async function createRecipe(data) {
         yield_unit: data.yieldUnit ?? null,
       })
       .returning('id');
-    await replaceIngredients(trx, id, data.ingredients);
+    await replaceIngredients(trx, userId, id, data.ingredients);
     await replaceSteps(trx, id, data.steps);
     await recalculateRecipeCosts(trx, [id], { reason: 'created', withParents: false });
     const after = await loadRecipeSnapshot(trx, id);
-    await recordChange(trx, { entityType: 'recipe', entityId: id, entityName: after.name, before: null, after });
-    return loadRecipe(trx, id);
+    await recordChange(trx, { userId, entityType: 'recipe', entityId: id, entityName: after.name, before: null, after });
+    return loadRecipe(trx, userId, id);
   });
 }
 
-export async function updateRecipe(id, data, { partial = false } = {}) {
+export async function updateRecipe(userId, id, data, { partial = false } = {}) {
   return db.transaction(async (trx) => {
-    const current = await findRecipeRow(trx, id);
+    const current = await findRecipeRow(trx, userId, id);
     const before = await loadRecipeSnapshot(trx, id);
 
     const fields = {};
@@ -270,26 +277,26 @@ export async function updateRecipe(id, data, { partial = false } = {}) {
     await checkYieldStillFits(trx, current, newYieldUnit);
 
     await trx('recipes').where({ id }).update({ ...fields, updated_at: trx.fn.now() });
-    if (!partial || data.ingredients !== undefined) await replaceIngredients(trx, id, data.ingredients);
+    if (!partial || data.ingredients !== undefined) await replaceIngredients(trx, userId, id, data.ingredients);
     if (!partial || data.steps !== undefined) await replaceSteps(trx, id, data.steps);
 
     await recalculateRecipeCosts(trx, [id], { reason: 'recipe_updated', withParents: false });
     const after = await loadRecipeSnapshot(trx, id);
-    const changeId = await recordChange(trx, { entityType: 'recipe', entityId: id, entityName: after.name, before, after });
+    const changeId = await recordChange(trx, { userId, entityType: 'recipe', entityId: id, entityName: after.name, before, after });
 
     // Its food cost, portions or yield may have changed the cost of recipes that use it.
     const parents = (await parentLinks(trx, [id])).map((link) => link.parent);
     await recalculateRecipeCosts(trx, parents, { reason: 'sub_recipe_changed', subRecipeId: id, causeChangeId: changeId });
 
-    return loadRecipe(trx, id);
+    return loadRecipe(trx, userId, id);
   });
 }
 
 // Soft delete: ingredient lines, steps and cost history stay, so the recipe can be restored.
 // A recipe that other (active) recipes use as a sub-recipe can't be deleted.
-export async function deleteRecipe(id) {
+export async function deleteRecipe(userId, id) {
   await db.transaction(async (trx) => {
-    const recipe = await findRecipeRow(trx, id);
+    const recipe = await findRecipeRow(trx, userId, id);
     const usedIn = await recipesUsingRecipe(trx, id);
     if (usedIn.length > 0) {
       throw new ConflictError(
@@ -300,7 +307,7 @@ export async function deleteRecipe(id) {
     }
     const before = await loadRecipeSnapshot(trx, id);
     await trx('recipes').where({ id }).update({ deleted_at: trx.fn.now() });
-    await recordChange(trx, { entityType: 'recipe', entityId: id, entityName: before.name, before, after: null });
+    await recordChange(trx, { userId, entityType: 'recipe', entityId: id, entityName: before.name, before, after: null });
   });
 }
 
@@ -312,9 +319,9 @@ export async function deleteRecipe(id) {
  * - 'unit_incompatible': the product's unit or the sub-recipe's yield changed to another kind
  *   (e.g. g -> piece, or the yield was removed) meanwhile.
  */
-export async function restoreRecipe(id) {
+export async function restoreRecipe(userId, id) {
   return db.transaction(async (trx) => {
-    const recipe = await trx('recipes').where({ id }).first();
+    const recipe = await trx('recipes').where({ id, user_id: userId }).first();
     if (!recipe) throw new NotFoundError('Recipe', id);
     if (recipe.deleted_at == null) {
       throw new ConflictError('RECIPE_NOT_DELETED', `Recipe "${recipe.name}" is not deleted`);
@@ -322,13 +329,13 @@ export async function restoreRecipe(id) {
 
     // The recipe as it was when deleted, from the change log.
     const deletion = await trx('change_log')
-      .where({ entity_type: 'recipe', entity_id: id, action: 'deleted' })
+      .where({ user_id: userId, entity_type: 'recipe', entity_id: id, action: 'deleted' })
       .orderBy('id', 'desc')
       .first('changes');
     const before = deletion ? recipeSnapshotFromDeletion(JSON.parse(deletion.changes)) : await loadRecipeSnapshot(trx, id);
 
     const productLines = before.ingredients.filter((line) => line.productId != null);
-    const existingProductIds = new Set(await trx('products').whereIn('id', productLines.map((line) => line.productId)).pluck('id'));
+    const existingProductIds = new Set(await trx('products').where('user_id', userId).whereIn('id', productLines.map((line) => line.productId)).pluck('id'));
     const dropped = productLines
       .filter((line) => !existingProductIds.has(line.productId))
       .map((line) => ({ ...line, reason: 'product_deleted' }));
@@ -372,8 +379,8 @@ export async function restoreRecipe(id) {
     await trx('recipes').where({ id }).update({ deleted_at: null, updated_at: trx.fn.now() });
     await recalculateRecipeCosts(trx, [id], { reason: 'recipe_restored', withParents: false });
     const after = await loadRecipeSnapshot(trx, id);
-    await recordChange(trx, { entityType: 'recipe', entityId: id, entityName: after.name, before, after, action: 'restored' });
+    await recordChange(trx, { userId, entityType: 'recipe', entityId: id, entityName: after.name, before, after, action: 'restored' });
 
-    return { recipe: await loadRecipe(trx, id), droppedIngredients: dropped };
+    return { recipe: await loadRecipe(trx, userId, id), droppedIngredients: dropped };
   });
 }

@@ -19,7 +19,8 @@ Everything a web or mobile client needs to talk to the pastry chef backend (step
 | Base URL (local) | `http://localhost:3000/api/v1` |
 | Health check | `GET http://localhost:3000/health` → `{ "status": "ok" }` |
 | Format | JSON in and out, camelCase field names. Send `Content-Type: application/json` on every request with a body, or the body is ignored and you get validation errors. |
-| Auth | None yet. All data is shared (single user). |
+| Auth | Every `/api/v1` request needs `Authorization: Bearer <access token>` from Supabase Auth (Google login): `(await supabase.auth.getSession()).data.session.access_token`. Without a valid token: `401 UNAUTHORIZED`. `/health` is public. |
+| Data | Each user has their own products, recipes and history. Another user's ids behave exactly like ids that don't exist (`404`, or "does not exist" when used as an ingredient). |
 | CORS | Allowed origins come from the backend's `CORS_ORIGIN` setting (default `*`). |
 | IDs | Positive integers. |
 | Dates | ISO 8601 strings in UTC, e.g. `"2026-10-08T09:09:27.000Z"`. |
@@ -36,6 +37,7 @@ Status codes used:
 | 201 | Created. The `Location` header holds the new resource's path, e.g. `/api/v1/recipes/3`. |
 | 204 | Deleted. Empty body. |
 | 400 | Invalid request. See [Errors](#errors). |
+| 401 | Missing, invalid or expired access token. Log in again. |
 | 404 | Unknown id or route. |
 | 409 | The action conflicts with existing recipes. |
 | 500 | Server error. |
@@ -269,6 +271,7 @@ export interface ChangeFeed {
 export type ErrorCode =
   | 'VALIDATION_ERROR'
   | 'BAD_REQUEST'
+  | 'UNAUTHORIZED'
   | 'NOT_FOUND'
   | 'PRODUCT_IN_USE'
   | 'UNIT_CONFLICT'
@@ -1119,7 +1122,8 @@ Every error has the same shape:
 |---|---|---|---|
 | 400 | `VALIDATION_ERROR` | `{ issues: ValidationIssue[] }` | Invalid body, path or query. Field problems are reported together; checks against stored products (unknown product, wrong unit) run once the fields themselves are valid. |
 | 400 | `BAD_REQUEST` | none | Malformed JSON (status 413 if the body is over 1 MB). |
-| 404 | `NOT_FOUND` | none | Unknown id (`"Product 99 not found"`) or route. |
+| 401 | `UNAUTHORIZED` | none | No `Authorization: Bearer` header, or the token is invalid or expired. Refresh the session or send the user to the login page. |
+| 404 | `NOT_FOUND` | none | Unknown id (`"Product 99 not found"`), another user's id, or route. |
 | 409 | `PRODUCT_IN_USE` | `{ recipes: RecipeRef[] }` | Deleting a product that recipes use. |
 | 409 | `UNIT_CONFLICT` | `{ recipes: RecipeRef[] }` | Changing a product's unit kind, or removing or changing the kind of a recipe's yield, while recipes use it that way. |
 | 409 | `RECIPE_NOT_DELETED` | none | Restoring a recipe that isn't deleted. |
@@ -1204,7 +1208,6 @@ export function diffIngredients(from: IngredientSnapshot[] | null, to: Ingredien
 
 ## Not supported yet
 
-- Login and per-user data (everything is shared for now).
 - Creating a sub-recipe inline while saving another recipe.
 - Converting between weight and volume (g ↔ ml).
 - Pagination and sort options (lists are sorted by name).

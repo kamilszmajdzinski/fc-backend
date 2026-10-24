@@ -20,5 +20,7 @@ export const config = {
   // Empty -> local SQLite file. postgres://... -> PostgreSQL (e.g. Supabase).
   databaseUrl: process.env.DATABASE_URL || null,
   databaseSsl: process.env.DATABASE_SSL !== 'false',
+  // Supabase project URL, e.g. https://abcd.supabase.co. API requests must carry a token it issued.
+  supabaseUrl: process.env.SUPABASE_URL || null,
   sqliteFile: path.join(rootDir, 'data', 'dev.sqlite3'),
 };

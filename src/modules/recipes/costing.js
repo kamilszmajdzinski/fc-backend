@@ -154,7 +154,7 @@ export async function recalculateRecipeCosts(
       };
     }
 
-    const recipe = await trx('recipes').where({ id }).first('id', 'name', 'portions', 'food_cost');
+    const recipe = await trx('recipes').where({ id }).first('id', 'user_id', 'name', 'portions', 'food_cost');
     const foodCost = await recalculateLines(trx, id);
     const costChanged = Math.abs(foodCost - recipe.food_cost) >= SAME_COST_TOLERANCE;
     await trx('recipes').where({ id }).update({ food_cost: foodCost, updated_at: trx.fn.now() });
@@ -172,6 +172,7 @@ export async function recalculateRecipeCosts(
         entry.causeChangeId == null
           ? null
           : await recordChange(trx, {
+              userId: recipe.user_id,
               entityType: 'recipe',
               entityId: id,
               entityName: recipe.name,

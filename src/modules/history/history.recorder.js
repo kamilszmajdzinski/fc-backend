@@ -5,18 +5,19 @@ import { diffSnapshots } from './snapshots.js';
 const SAME_COST_TOLERANCE = 1e-9;
 
 /**
- * Adds a change log entry from the snapshots before and after a save (see snapshots.js).
+ * Adds a change log entry, owned by `userId`, from the snapshots before and after a save (see snapshots.js).
  * `before` is null when created, `after` is null when deleted; pass `action` for anything else
  * (e.g. 'restored'). An update that changed nothing is not logged. Returns the entry id, or
  * null when nothing was logged.
  */
-export async function recordChange(trx, { entityType, entityId, entityName, before, after, action, causeChangeId = null }) {
+export async function recordChange(trx, { userId, entityType, entityId, entityName, before, after, action, causeChangeId = null }) {
   action ??= before == null ? 'created' : after == null ? 'deleted' : 'updated';
   const changes = diffSnapshots(before, after);
   if (action === 'updated' && changes.length === 0) return null;
 
   const [{ id }] = await trx('change_log')
     .insert({
+      user_id: userId,
       entity_type: entityType,
       entity_id: entityId,
       entity_name: entityName,

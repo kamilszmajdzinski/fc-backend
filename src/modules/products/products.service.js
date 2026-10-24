@@ -7,8 +7,9 @@ import { productSnapshot } from '../history/snapshots.js';
 import { recalculateRecipeCosts } from '../recipes/costing.js';
 import { fromProductRow, toProductDto, toProductRow } from './products.mapper.js';
 
-async function findProductRow(executor, id) {
-  const row = await executor('products').where({ id }).first();
+// Another user's product is reported as missing, the same as one that doesn't exist.
+async function findProductRow(executor, userId, id) {
+  const row = await executor('products').where({ id, user_id: userId }).first();
   if (!row) throw new NotFoundError('Product', id);
   return row;
 }
@@ -32,8 +33,8 @@ function applyPatch(current, patch) {
   return merged;
 }
 
-export async function listProducts({ search } = {}) {
-  const query = db('products').orderBy('name');
+export async function listProducts(userId, { search } = {}) {
+  const query = db('products').where('user_id', userId).orderBy('name');
   if (search) {
     const pattern = `%${search.toLowerCase()}%`;
     query.where((builder) =>
@@ -44,25 +45,25 @@ export async function listProducts({ search } = {}) {
   return rows.map(toProductDto);
 }
 
-export async function getProduct(id) {
-  return toProductDto(await findProductRow(db, id));
+export async function getProduct(userId, id) {
+  return toProductDto(await findProductRow(db, userId, id));
 }
 
-export async function listRecipesUsingProduct(id) {
-  await findProductRow(db, id);
+export async function listRecipesUsingProduct(userId, id) {
+  await findProductRow(db, userId, id);
   return recipesUsingProduct(db, id);
 }
 
 // Also used when a recipe creates a product inline, so it takes the caller's transaction.
-export async function insertProduct(trx, data) {
-  const [row] = await trx('products').insert(toProductRow(data)).returning('*');
+export async function insertProduct(trx, userId, data) {
+  const [row] = await trx('products').insert({ ...toProductRow(data), user_id: userId }).returning('*');
   await recordProductPriceChange(trx, { product: row, reason: 'created' });
-  await recordChange(trx, { entityType: 'product', entityId: row.id, entityName: row.name, before: null, after: productSnapshot(row) });
+  await recordChange(trx, { userId, entityType: 'product', entityId: row.id, entityName: row.name, before: null, after: productSnapshot(row) });
   return row;
 }
 
-export async function createProduct(data) {
-  return db.transaction(async (trx) => toProductDto(await insertProduct(trx, data)));
+export async function createProduct(userId, data) {
+  return db.transaction(async (trx) => toProductDto(await insertProduct(trx, userId, data)));
 }
 
 /**
@@ -71,9 +72,9 @@ export async function createProduct(data) {
  * the product (directly or through sub-recipes) is recalculated; their food cost changes are
  * logged as caused by this change.
  */
-export async function updateProduct(id, data, { partial = false } = {}) {
+export async function updateProduct(userId, id, data, { partial = false } = {}) {
   return db.transaction(async (trx) => {
-    const current = await findProductRow(trx, id);
+    const current = await findProductRow(trx, userId, id);
     const next = toProductRow(partial ? applyPatch(fromProductRow(current), data) : data);
 
     if (next.package_unit !== current.package_unit) {
@@ -94,8 +95,9 @@ export async function updateProduct(id, data, { partial = false } = {}) {
       next.package_size !== current.package_size ||
       next.package_unit !== current.package_unit;
 
-    const updated = await findProductRow(trx, id);
+    const updated = await findProductRow(trx, userId, id);
     const changeId = await recordChange(trx, {
+      userId,
       entityType: 'product',
       entityId: id,
       entityName: updated.name,
@@ -128,9 +130,9 @@ export async function updateProduct(id, data, { partial = false } = {}) {
   });
 }
 
-export async function deleteProduct(id) {
+export async function deleteProduct(userId, id) {
   await db.transaction(async (trx) => {
-    const product = await findProductRow(trx, id);
+    const product = await findProductRow(trx, userId, id);
     const recipes = await recipesUsingProduct(trx, id);
     if (recipes.length > 0) {
       throw new ConflictError(
@@ -143,6 +145,6 @@ export async function deleteProduct(id) {
     // can go; restoring such a recipe reports them as dropped.
     await trx('recipe_ingredients').where('product_id', id).del();
     await trx('products').where({ id }).del();
-    await recordChange(trx, { entityType: 'product', entityId: id, entityName: product.name, before: productSnapshot(product), after: null });
+    await recordChange(trx, { userId, entityType: 'product', entityId: id, entityName: product.name, before: productSnapshot(product), after: null });
   });
 }

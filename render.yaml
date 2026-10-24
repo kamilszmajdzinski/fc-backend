@@ -1,0 +1,22 @@
+# Render Blueprint: Dashboard -> New -> Blueprint -> pick this repo. Values marked sync: false
+# are asked for once in the dashboard and never stored here.
+services:
+  - type: web
+    name: fc-backend
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: master
+    buildCommand: npm ci
+    # The free plan has no pre-deploy step, so migrations run before the server starts.
+    startCommand: npm run migrate && npm start
+    healthCheckPath: /health
+    # Deploy a push to master only after the GitHub Actions tests pass.
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: DATABASE_URL # Supabase -> Connect -> Session pooler
+        sync: false
+      - key: SUPABASE_URL # https://<project-ref>.supabase.co
+        sync: false
+      - key: CORS_ORIGIN # https://<app>.vercel.app
+        sync: false

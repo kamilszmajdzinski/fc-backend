@@ -25,3 +25,9 @@ export class ConflictError extends HttpError {
     super(409, code, message, details);
   }
 }
+
+export class UnauthorizedError extends HttpError {
+  constructor(message = 'Log in to continue') {
+    super(401, 'UNAUTHORIZED', message);
+  }
+}

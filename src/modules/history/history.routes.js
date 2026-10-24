@@ -12,5 +12,5 @@ const feedQuerySchema = z.object({
 export const changesRouter = Router();
 
 changesRouter.get('/', validate({ query: feedQuerySchema }), async (req, res) => {
-  res.json(await getChangeFeed(req.validated.query));
+  res.json(await getChangeFeed(req.user.id, req.validated.query));
 });
