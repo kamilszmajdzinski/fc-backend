@@ -8,6 +8,7 @@ Everything a web or mobile client needs to talk to the pastry chef backend (step
 - [Products](#products): [list](#list-products) · [get](#get-a-product) · [recipes using it](#recipes-that-use-a-product) · [create](#create-a-product) · [replace](#replace-a-product) · [update](#update-a-product) · [delete](#delete-a-product)
 - [Recipes](#recipes): [list](#list-recipes) · [get](#get-a-recipe) · [create](#create-a-recipe) · [replace](#replace-a-recipe) · [update](#update-a-recipe) · [delete](#delete-a-recipe) · [restore](#restore-a-recipe) · [sub-recipes](#sub-recipes) · [used in](#recipes-that-use-a-recipe)
 - [History](#history): [price and cost history](#price-and-cost-history) · [product price history](#product-price-history) · [recipe cost history](#recipe-cost-history) · [change log](#change-log) · [product and recipe change log](#product-and-recipe-change-log) · [change feed](#change-feed)
+- [Catalog (Frisco.pl)](#catalog-friscopl): [status](#catalog-status) · [list products](#list-catalog-products) · [get a product](#get-a-catalog-product) · [categories](#catalog-categories)
 - [Errors](#errors)
 - [UI flows and gotchas](#ui-flows-and-gotchas)
 - [Not supported yet](#not-supported-yet)
@@ -22,10 +23,10 @@ Everything a web or mobile client needs to talk to the pastry chef backend (step
 | Auth | Every `/api/v1` request needs `Authorization: Bearer <access token>` from Supabase Auth (Google login): `(await supabase.auth.getSession()).data.session.access_token`. Without a valid token: `401 UNAUTHORIZED`. `/health` is public. |
 | Data | Each user has their own products, recipes and history. Another user's ids behave exactly like ids that don't exist (`404`, or "does not exist" when used as an ingredient). |
 | CORS | Allowed origins come from the backend's `CORS_ORIGIN` setting (default `*`). |
-| IDs | Positive integers. |
+| IDs | Positive integers. Catalog ids are Frisco's own ids, sent as digit strings (e.g. `"19136"`). |
 | Dates | ISO 8601 strings in UTC, e.g. `"2026-10-08T09:09:27.000Z"`. |
 | Money | Plain numbers rounded to 2 decimals. There is no currency field; the app decides the currency. `unitPrice` on recipe ingredients is rounded to 6 decimals because prices per g or mg are tiny. |
-| Lists | Always `{ "items": [...] }`, sorted by name. No pagination yet. |
+| Lists | Always `{ "items": [...] }`, sorted by name. Only catalog products are paged and sortable. |
 | Unknown fields | Ignored, so you can send an object you got from a GET back in a PUT. |
 | Request body limit | 1 MB |
 
@@ -264,6 +265,82 @@ export interface ChangeLogEntry extends ChangeEntry {
 export interface ChangeFeed {
   items: ChangeLogEntry[];
   nextBefore: number | null; // pass as ?before= to get the next page; null when there is no more
+}
+
+// ---------- Catalog (Frisco.pl, read-only) ----------
+
+export type CatalogUnit = 'kg' | 'l' | 'piece';
+export type CatalogSortField = 'name' | 'brand' | 'price' | 'pricePerUnit' | 'discountPercent';
+export type CatalogSort = CatalogSortField | `-${CatalogSortField}`; // "-" = descending
+
+export interface CatalogCategoryRef {
+  id: string;
+  name: string;
+}
+
+export interface CatalogProduct {
+  id: string;                     // Frisco product id
+  ean: string | null;
+  name: string;
+  brand: string | null;
+  producer: string | null;
+  packageSize: number | null;     // whole package in packageUnit: 0.2 (kg), or 6 (l) for 12 x 0.5 l
+  packageUnit: CatalogUnit | null;
+  packCount: number;              // items in a multipack, usually 1
+  price: number | null;           // current shelf price (PLN, incl. VAT); null for a few products
+  regularPrice: number | null;    // price without the current discount; equals price when not on sale
+  promotionPrice: number | null;  // price with a conditional promotion (e.g. buy 2), if any
+  discountPercent: number | null; // (regularPrice - price) / regularPrice; null when not on sale
+  pricePerUnit: number | null;    // price per kg / l / piece; null without price or packageSize
+  pricingUnit: CatalogUnit | null;
+  vat: number | null;             // percent, e.g. 23
+  isAvailable: boolean;
+  primaryCategory: CatalogCategoryRef | null;
+  imageUrl: string | null;
+  productUrl: string | null;      // product page on frisco.pl
+}
+
+export interface CatalogProductDetail extends CatalogProduct {
+  nameEn: string | null;
+  description: string | null;
+  stock: number | null;
+  rating: number | null;          // 0-5
+  ratingVotes: number | null;
+  countryOfOrigin: string | null; // e.g. 'PL'
+  primaryCategoryPath: CatalogCategoryRef[]; // top level first
+}
+
+// GET /catalog/products
+export interface CatalogProductPage {
+  items: CatalogProduct[];
+  total: number;   // matching products across all pages
+  limit: number;
+  offset: number;
+}
+
+export interface CatalogCategory {
+  id: string;
+  name: string;
+  nameEn: string | null;
+  parentId: string | null;   // null for top-level categories
+  depth: number;             // 0 = top level
+  productCount: number;      // products in the whole subtree
+  hasChildren: boolean;
+  url: string | null;
+}
+
+// GET /catalog/categories/:id (also `path` on search results)
+export interface CatalogCategoryDetail extends CatalogCategory {
+  path: CatalogCategoryRef[];     // top level first, ending with this category
+  children: CatalogCategory[];
+}
+
+// GET /catalog
+export interface CatalogStatus {
+  feedGeneratedAt: string | null; // when Frisco generated the imported feed
+  importedAt: string | null;
+  categoryCount: number;
+  productCount: number;
 }
 
 // ---------- Errors ----------
@@ -1104,6 +1181,94 @@ Response `200`: `ChangeFeed`, i.e. `{ "items": ChangeLogEntry[], "nextBefore": n
 
 ---
 
+## Catalog (Frisco.pl)
+
+A read-only copy of the whole [Frisco.pl](https://www.frisco.pl) product catalog (about 15,000 products and 10,000 categories), the same for every user. It comes from Frisco's official public feed, which is regenerated daily and is for personal, non-commercial use. The backend refreshes its copy with `npm run catalog:import`, so data is at most as fresh as the last import (see [status](#catalog-status)).
+
+Catalog products are separate from the user's own [products](#products). To use one in recipes, create a product from it, e.g. `{ name, manufacturer: brand, packageSize, packageUnit, pricePerPackage: price }` (the units `kg`, `l` and `piece` are valid product units).
+
+### Catalog status
+
+`GET /catalog` → `CatalogStatus`
+
+```json
+{ "feedGeneratedAt": "2026-10-25T01:21:19+02:00", "importedAt": "2026-10-25T00:30:02.000Z", "categoryCount": 9956, "productCount": 14926 }
+```
+
+Before the first import all counts are `0` and the dates `null`.
+
+### List catalog products
+
+`GET /catalog/products` → `CatalogProductPage`
+
+All query parameters are optional and can be combined (they all have to match).
+
+| Parameter | Example | Meaning |
+|---|---|---|
+| `search` | `masło` | Part of the name, brand or producer. Case-insensitive, Polish letters work. |
+| `categoryId` | `18974` or `18974,19136` | In any of these categories **or their subcategories**. |
+| `brand` | `Łaciate` | Exact brand, case-insensitive. |
+| `ean` | `5900820000011` | Exact barcode. |
+| `unit` | `kg` | `kg`, `l` or `piece`. |
+| `available` | `true` | `true` / `false`: can be ordered right now. |
+| `onSale` | `true` | `true`: the shelf price is reduced (`regularPrice > price`). `false`: it isn't. |
+| `minPrice`, `maxPrice` | `5`, `20` | Range for `price` (inclusive). Products without a price are left out when either is set. |
+| `sort` | `-pricePerUnit` | `name` (default), `brand`, `price`, `pricePerUnit` or `discountPercent`; put `-` in front for descending. Products without a value (e.g. no price) are always last. |
+| `limit` | `50` | Page size, 1–200, default 50. |
+| `offset` | `100` | How many to skip, default 0. Next page: `offset + limit` while it is less than `total`. |
+
+Cheapest available butter per kg in the dairy category:
+
+`GET /api/v1/catalog/products?categoryId=18974&search=masło&available=true&sort=pricePerUnit&limit=2`
+
+```json
+{
+  "items": [
+    {
+      "id": "135845",
+      "ean": "5908235955780",
+      "name": "Masło extra 82% tłuszczu",
+      "brand": "KANKA",
+      "producer": "LUMIKO",
+      "packageSize": 0.2,
+      "packageUnit": "kg",
+      "packCount": 1,
+      "price": 4.99,
+      "regularPrice": 4.99,
+      "promotionPrice": null,
+      "discountPercent": null,
+      "pricePerUnit": 24.95,
+      "pricingUnit": "kg",
+      "vat": 5,
+      "isAvailable": true,
+      "primaryCategory": { "id": "19125", "name": "Tradycyjne" },
+      "imageUrl": "https://res.cloudinary.com/dj484tw6k/f_auto,q_auto,c_pad,b_white,w_360,h_360/v1789037466/5f1aea20-8035-4082-ba3e-fe5acf07bc4d.png",
+      "productUrl": "https://www.frisco.pl/pid,135845/n,kanka-maslo-extra-82-tluszczu/stn,product"
+    }
+  ],
+  "total": 28,
+  "limit": 2,
+  "offset": 0
+}
+```
+
+One item shown; the second is left out.
+
+Invalid parameters (e.g. `sort=cheapest`, `available=yes`, `minPrice` above `maxPrice`, `limit=500`) → `400 VALIDATION_ERROR` with paths like `query.sort`.
+
+### Get a catalog product
+
+`GET /catalog/products/:id` → `CatalogProductDetail`: everything from the list, plus the description, rating, stock, country of origin and the full path of the primary category (`[{ "id": "18974", "name": "Nabiał, jaja, sery" }, ...]`). Unknown id → `404`.
+
+### Catalog categories
+
+- `GET /catalog/categories` → `{ items: CatalogCategory[] }`: the top-level categories, sorted by name.
+- `GET /catalog/categories?parentId=18974` → the direct subcategories of a category.
+- `GET /catalog/categories?search=mleko` → up to 50 categories whose name contains the text, top levels first. Names repeat (the **BIO** `100000` and **Lokalni dostawcy** `200000` trees mirror the main tree under other ids), so each result also has `path`.
+- `GET /catalog/categories/:id` → `CatalogCategoryDetail` with `path` (breadcrumb) and `children`. Unknown id → `404`.
+
+Main top-level categories: Nabiał, jaja, sery `18974` · Mięso i wędliny `19136` · Warzywa i owoce `18703` · Spiżarnia `19378` · Z piekarni `18894` · Ryby `19227` · Mrożone `19254` · Dania gotowe `20235` · Słodycze i przekąski `20310` · Kawa i herbata `20515` · Napoje `21106` · Alkohole `20607` · BIO `100000` · Lokalni dostawcy `200000`.
+
 ## Errors
 
 Every error has the same shape:
@@ -1210,6 +1375,6 @@ export function diffIngredients(from: IngredientSnapshot[] | null, to: Ingredien
 
 - Creating a sub-recipe inline while saving another recipe.
 - Converting between weight and volume (g ↔ ml).
-- Pagination and sort options (lists are sorted by name).
+- Pagination and sort options for products and recipes (lists are sorted by name; only the catalog is paged).
 - Photos.
 - Reducing inventory automatically when a recipe is made.

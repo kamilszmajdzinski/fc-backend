@@ -25,6 +25,7 @@ Users log in with Google through Supabase Auth in the web app. Every `/api/v1` r
 | `npm test` | Run all tests (in-memory SQLite, nothing to set up) |
 | `npm run migrate` / `migrate:rollback` | Apply / undo database migrations |
 | `npm run seed` | Load demo data for `SEED_USER_ID` |
+| `npm run catalog:import` | Replace the Frisco.pl catalog with the current feed (`-- --file feed.json` to use a saved one) |
 
 Configuration is read from environment variables or a `.env` file. See [.env.example](.env.example).
 
@@ -40,6 +41,8 @@ src/
     products/    schema (zod) · mapper · service (logic + queries) · routes
     recipes/     schema · service · routes · costing (price math + recalculation)
     history/     recorder (writes entries during saves) · snapshots (what the change log compares) · service (reads) · routes (change feed)
+    catalog/     Frisco.pl catalog: import (feed -> tables) · schema · mapper · service · routes (read-only)
+scripts/         import-catalog.js (npm run catalog:import)
 test/            unit tests and API tests
 ```
 
@@ -81,11 +84,20 @@ Quick overview (base path `/api/v1`, except `/health`):
 | GET | `/recipes/:id/changes` | Change log of the recipe (all fields), newest first |
 | GET | `/recipes/:id/used-in` | Recipes that use this recipe as a sub-recipe |
 | GET | `/changes?entityType=&limit=&before=` | Change feed across all products and recipes, paged |
+| GET | `/catalog` | Frisco catalog status: feed date, counts |
+| GET | `/catalog/products?search=&categoryId=&brand=&ean=&unit=&available=&onSale=&minPrice=&maxPrice=&sort=&limit=&offset=` | Frisco products, filtered, sorted and paged |
+| GET | `/catalog/products/:id` | One Frisco product with description and category path |
+| GET | `/catalog/categories?parentId=&search=` | Frisco categories (top level, children of one, or by name) |
+| GET | `/catalog/categories/:id` | One Frisco category with its path and children |
 | POST | `/recipes` | Create (201) |
 | PUT | `/recipes/:id` | Replace (missing lists become empty) |
 | PATCH | `/recipes/:id` | Partial update. A list that is sent replaces the stored list |
 | DELETE | `/recipes/:id` | Soft delete (204). The recipe is hidden but keeps its data |
 | POST | `/recipes/:id/restore` | Restore a deleted recipe, recalculated with current prices. Returns `{ recipe, droppedIngredients }` |
+
+## Product catalog (Frisco.pl)
+
+`/api/v1/catalog` serves a read-only copy of the Frisco.pl catalog, shared by all users. It comes from Frisco's official public feed (listed in their robots.txt, about 60 MB, regenerated daily, **for personal, non-commercial use**: ask Frisco before using it commercially). `npm run catalog:import` downloads the feed and replaces the catalog in one transaction, in whatever database `DATABASE_URL` points to; run it against Supabase to refresh production. Prices are in PLN with VAT; `pricePerUnit` is `price / packageSize` per kg, l or piece.
 
 ## Deployment
 

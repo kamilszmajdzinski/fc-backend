@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Suggestions test</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 16px; color: #222; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  input, select { font: inherit; padding: 4px 6px; }
+  #q { width: 220px; }
+  #api { width: 260px; }
+  h3 { margin: 14px 0 4px; }
+  .chip { display: inline-block; padding: 3px 8px; margin: 2px; border: 1px solid #ccc; border-radius: 12px; background: #f5f5f5; }
+  .chip b { font-weight: 600; }
+  .main .chip { background: #e6f0ff; border-color: #99c; font-size: 15px; }
+  .n { color: #888; font-size: 12px; }
+  #msg { color: #c00; }
+  pre { background: #f7f7f7; padding: 8px; font-size: 12px; overflow: auto; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <input id="api" value="http://localhost:4000/api/v1" title="API base URL">
+  <input id="q" placeholder="Type a product name (e.g. mąk)" autofocus>
+  <label><input type="checkbox" id="price" checked> price</label>
+  <input id="size" type="number" step="any" min="0" placeholder="package size" style="width:110px">
+  <select id="unit"><option value="">unit</option><option>g</option><option>kg</option><option>ml</option><option>l</option><option>piece</option></select>
+  <span id="msg"></span>
+</div>
+
+<h3 class="main">Main</h3>
+<div id="main"></div>
+<h3>More (main + 1 word)</h3>
+<div id="more"></div>
+<h3>Others</h3>
+<div id="others"></div>
+<h3>Raw response</h3>
+<pre id="raw"></pre>
+
+<script>
+const $ = (id) => document.getElementById(id);
+for (const [id, store] of [['api', 'fcApi'], ['q', 'fcQ'], ['size', 'fcSize'], ['unit', 'fcUnit']]) {
+  $(id).value = localStorage[store] || $(id).value;
+}
+
+function chip(s) {
+  const price = s.price ? ` — <b>${s.price.pricePerUnit ?? '?'} zł/${s.price.pricingUnit ?? '?'}</b>${s.price.pricePerPackage != null ? ` (${s.price.pricePerPackage} zł/pack)` : ''}` : '';
+  return `<span class="chip">${s.name} <span class="n">(${s.productCount})</span>${price}</span>`;
+}
+
+let timer;
+async function run() {
+  localStorage.fcApi = $('api').value.trim();
+  localStorage.fcQ = $('q').value;
+  localStorage.fcSize = $('size').value;
+  localStorage.fcUnit = $('unit').value;
+
+  $('msg').textContent = '';
+  if ($('q').value.trim().length < 2) { $('main').innerHTML = $('more').innerHTML = $('others').innerHTML = $('raw').textContent = ''; return; }
+
+  const url = new URL(localStorage.fcApi + '/catalog/suggestions');
+  url.searchParams.set('q', $('q').value.trim());
+  if ($('price').checked) url.searchParams.set('price', 'true');
+  if ($('size').value) url.searchParams.set('packageSize', $('size').value);
+  if ($('unit').value) url.searchParams.set('packageUnit', $('unit').value);
+
+  try {
+    const res = await fetch(url);
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error?.message || res.statusText);
+    $('main').innerHTML = body.main ? chip(body.main) : '<span class="n">no match</span>';
+    $('more').innerHTML = body.more.map(chip).join('') || '<span class="n">–</span>';
+    $('others').innerHTML = body.others.map(chip).join('') || '<span class="n">–</span>';
+    $('raw').textContent = JSON.stringify(body, null, 1);
+  } catch (err) {
+    $('msg').textContent = err.message;
+  }
+}
+
+$('q').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 200); });
+for (const id of ['price', 'size', 'unit', 'api']) $(id).addEventListener('change', run);
+run();
+</script>
+</body>
+</html>
