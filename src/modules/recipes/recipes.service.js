@@ -2,6 +2,7 @@ import db from '../../db/knex.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors.js';
 import { round2, round2OrNull, round6, toIsoDate } from '../../lib/format.js';
 import { areCompatible, compatibleUnits, subRecipeUnits } from '../../lib/units.js';
+import { canonicalCategory } from '../categories/categories.service.js';
 import { recordChange } from '../history/history.recorder.js';
 import { loadRecipeSnapshot, recipeSnapshotFromDeletion } from '../history/snapshots.js';
 import { insertProduct } from '../products/products.service.js';
@@ -12,6 +13,7 @@ function toRecipeSummaryDto(row) {
     id: row.id,
     name: row.name,
     description: row.description,
+    category: row.category,
     portions: row.portions,
     foodCost: round2(row.food_cost),
     costPerPortion: round2(row.food_cost / row.portions),
@@ -28,6 +30,7 @@ function toRecipeDto(recipe, ingredients, steps) {
     id: recipe.id,
     name: recipe.name,
     description: recipe.description,
+    category: recipe.category,
     portions: recipe.portions,
     foodCost: round2(recipe.food_cost),
     costPerPortion: round2(recipe.food_cost / recipe.portions),
@@ -212,7 +215,7 @@ async function checkYieldStillFits(trx, recipe, newYieldUnit) {
   }
 }
 
-export async function listRecipes(userId, { search } = {}) {
+export async function listRecipes(userId, { search, category } = {}) {
   const ingredientCount = db('recipe_ingredients as ri')
     .count('*')
     .where('ri.recipe_id', db.ref('r.id'))
@@ -223,6 +226,7 @@ export async function listRecipes(userId, { search } = {}) {
     .select('r.*', ingredientCount)
     .orderBy('r.name');
   if (search) query.whereRaw('lower(r.name) like ?', [`%${search.toLowerCase()}%`]);
+  if (category) query.where('r.category', await canonicalCategory(db, userId, 'recipe', category));
   const rows = await query;
   return rows.map(toRecipeSummaryDto);
 }
@@ -244,6 +248,7 @@ export async function createRecipe(userId, data) {
         user_id: userId,
         name: data.name,
         description: data.description ?? null,
+        category: await canonicalCategory(trx, userId, 'recipe', data.category),
         portions: data.portions,
         sell_price: data.sellPrice ?? null,
         yield_quantity: data.yieldQuantity ?? null,
@@ -267,6 +272,7 @@ export async function updateRecipe(userId, id, data, { partial = false } = {}) {
     const fields = {};
     if (!partial || data.name !== undefined) fields.name = data.name;
     if (!partial || data.description !== undefined) fields.description = data.description ?? null;
+    if (!partial || data.category !== undefined) fields.category = await canonicalCategory(trx, userId, 'recipe', data.category);
     if (!partial || data.portions !== undefined) fields.portions = data.portions;
     if (!partial || data.sellPrice !== undefined) fields.sell_price = data.sellPrice ?? null;
     if (!partial || data.yieldQuantity !== undefined) fields.yield_quantity = data.yieldQuantity ?? null;

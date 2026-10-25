@@ -17,6 +17,20 @@ export function round6(value) {
   return roundTo(value, 6);
 }
 
+/**
+ * A catalog price shown as an approximate "average market price", not the scraped figure: steps
+ * get coarser as the price grows, which also rounds away the .99/.49-style shelf pricing a shown
+ * exact figure would otherwise still look scraped from. Used only for catalog display values
+ * (never for a user's own product prices, and never for sorting or filtering, which use the
+ * precise stored figure).
+ */
+export function roundMarketPrice(value) {
+  if (value == null) return null;
+  const step = value < 5 ? 0.1 : value < 20 ? 0.5 : value < 100 ? 1 : 5;
+  const rounded = Math.round(Number((value / step).toPrecision(12))) * step;
+  return Number(rounded.toPrecision(12));
+}
+
 const SQLITE_TIMESTAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
 // SQLite returns CURRENT_TIMESTAMP as "YYYY-MM-DD HH:MM:SS" (UTC); PostgreSQL returns Date objects.

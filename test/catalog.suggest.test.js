@@ -136,14 +136,16 @@ describe('name suggestions', () => {
 
     const flour = await suggest('mąka psz', { price: 'true', packageSize: 500, packageUnit: 'g' });
     assert.equal(flour.main.price.pricePerUnit, 3.5);
-    assert.equal(flour.main.price.pricePerPackage, 1.75);
+    // Rounded to a market-price estimate (roundMarketPrice): 1.75 -> nearest 0.10.
+    assert.equal(flour.main.price.pricePerPackage, 1.8);
   });
 
   it('prices products sold by the piece per piece, using the count in the name', async () => {
     const res = await suggest('jaja', { price: 'true', packageSize: 6, packageUnit: 'piece' });
     assert.equal(res.main.price.pricingUnit, 'piece');
     assert.equal(res.main.price.pricePerUnit, 1.3);
-    assert.equal(res.main.price.pricePerPackage, 7.8);
+    // Rounded to a market-price estimate (roundMarketPrice): 7.8 -> nearest 1.
+    assert.equal(res.main.price.pricePerPackage, 8);
   });
 
   it('has no price in a unit the products are not sold in', async () => {
@@ -214,7 +216,8 @@ describe('name suggestions', () => {
     const cheaper = feed.products.map((p) => (p.id.startsWith('e') ? { ...p, price: { price: p.price.price / 2 } } : p));
     await importCatalog(db, { ...feed, products: cheaper });
 
-    assert.equal((await suggest('jaja', { price: 'true' })).main.price.pricePerUnit, 0.65);
+    // Rounded to a market-price estimate (roundMarketPrice): 0.65 -> nearest 0.10.
+    assert.equal((await suggest('jaja', { price: 'true' })).main.price.pricePerUnit, 0.7);
   });
 
   it('rejects a too short query and a package size without unit', async () => {

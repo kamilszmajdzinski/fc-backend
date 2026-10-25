@@ -18,6 +18,9 @@ export const catalogProductsQuerySchema = z
       .regex(/^\d+(,\d+)*$/, 'Expected category ids separated by commas')
       .transform((value) => value.split(','))
       .optional(),
+    // Only kitchen products (those with a kitchenCategory), or one kitchen category.
+    kitchen: booleanQuery.optional(),
+    kitchenCategory: z.string().trim().min(1).max(100).optional(),
     brand: z.string().trim().min(1).max(200).optional(),
     ean: z.string().trim().regex(/^\d+$/, 'Expected digits').optional(),
     unit: z.enum(['kg', 'l', 'piece']).optional(),
@@ -54,3 +57,7 @@ export const suggestionsQuerySchema = z
     message: 'packageSize needs packageUnit',
     path: ['packageUnit'],
   });
+
+export const kitchenCategoriesQuerySchema = z.object({
+  available: booleanQuery.optional(),
+});

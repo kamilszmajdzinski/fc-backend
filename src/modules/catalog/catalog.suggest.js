@@ -1,6 +1,7 @@
 import db from '../../db/knex.js';
-import { round2 } from '../../lib/format.js';
+import { roundMarketPrice } from '../../lib/format.js';
 import { convert, pricingUnitFor } from '../../lib/units.js';
+import { isStoreBrand } from './catalog.kitchen.js';
 
 // Top-level categories that are never kitchen ingredients: cosmetics, home cleaning, pets, office
 // and school supplies, baby products, health supplements, home accessories, gift boxes. Everything
@@ -28,7 +29,7 @@ export function fold(text) {
 const mergePercent = (text) => text.replace(/(\d+)[.,]\s*(\d+)\s*%/g, '$1‚$2%').replace(/(\d+)\s+%/g, '$1%');
 const isPercent = (token) => /^\d+(‚\d+)?%$/.test(token);
 
-const tokens = (text) => mergePercent(text).toLowerCase().split(/[\s,.()\-–/]+/).filter(Boolean);
+export const tokens = (text) => mergePercent(text).toLowerCase().split(/[\s,.()\-–/]+/).filter(Boolean);
 const isWord = (token) => /^\p{L}{2,}$/u.test(token);
 // A real word or a percentage makes a suggestion; "typ 450" or "1kg" end it.
 const isNameToken = (token) => isWord(token) || isPercent(token);
@@ -37,7 +38,7 @@ const toPhraseName = (key) => capitalize(key.replaceAll('‚', ','));
 
 // A query word with Polish letters is compared as typed ("mąk" must not match "makaron"); one
 // without them is compared folded ("maka" matches "mąka").
-function startsWord(token, queryWord) {
+export function startsWord(token, queryWord) {
   return (queryWord === fold(queryWord) ? fold(token) : token).startsWith(queryWord);
 }
 
@@ -117,7 +118,7 @@ function collectPhrases(products, queryWords, maxOffset, getTokens = (product) =
 function brandsOf(products) {
   const counts = new Map();
   for (const { brand } of products) {
-    if (brand) counts.set(brand, (counts.get(brand) ?? 0) + 1);
+    if (brand && !isStoreBrand(brand)) counts.set(brand, (counts.get(brand) ?? 0) + 1);
   }
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -134,11 +135,12 @@ function priceOf(products, { packageSize, packageUnit }) {
   const median = quantile(prices, 0.5);
   return {
     pricingUnit: unit,
-    pricePerUnit: round2(median),
-    low: round2(quantile(prices, 0.25)),
-    high: round2(quantile(prices, 0.75)),
+    // Approximate average market prices (see roundMarketPrice), not the scraped shelf prices.
+    pricePerUnit: roundMarketPrice(median),
+    low: roundMarketPrice(quantile(prices, 0.25)),
+    high: roundMarketPrice(quantile(prices, 0.75)),
     sampleSize: prices.length,
-    pricePerPackage: packageSize ? round2(median * convert(packageSize, packageUnit, unit)) : null,
+    pricePerPackage: packageSize ? roundMarketPrice(median * convert(packageSize, packageUnit, unit)) : null,
   };
 }
 

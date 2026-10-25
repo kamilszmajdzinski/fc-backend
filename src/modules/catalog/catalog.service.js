@@ -1,5 +1,6 @@
 import db from '../../db/knex.js';
 import { NotFoundError } from '../../lib/errors.js';
+import { PRODUCT_CATEGORIES } from '../categories/categories.defaults.js';
 import { toCatalogCategoryDto, toCatalogProductDetailDto, toCatalogProductDto, toCatalogStatusDto } from './catalog.mapper.js';
 
 const SORT_COLUMNS = {
@@ -10,7 +11,7 @@ const SORT_COLUMNS = {
   discountPercent: 'p.discount_percent',
 };
 
-function applyProductFilters(query, { search, categoryId, brand, ean, unit, available, onSale, minPrice, maxPrice }) {
+function applyProductFilters(query, { search, categoryId, kitchen, kitchenCategory, brand, ean, unit, available, onSale, minPrice, maxPrice }) {
   if (search) {
     const pattern = `%${search.toLowerCase()}%`;
     query.where((builder) =>
@@ -25,6 +26,8 @@ function applyProductFilters(query, { search, categoryId, brand, ean, unit, avai
       db('catalog_product_categories as pc').select(1).whereRaw('pc.product_id = p.id').whereIn('pc.category_id', categoryId),
     );
   }
+  if (kitchen) query.whereNotNull('p.kitchen_category');
+  if (kitchenCategory) query.where('p.kitchen_category', kitchenCategory);
   if (brand) query.whereRaw('lower(p.brand) = ?', [brand.toLowerCase()]);
   if (ean) query.where('p.ean', ean);
   if (unit) query.where('p.package_unit', unit);
@@ -108,4 +111,16 @@ export async function getCatalogCategory(id) {
 
 export async function getCatalogStatus() {
   return toCatalogStatusDto(await db('catalog_imports').orderBy('id', 'desc').first());
+}
+
+/**
+ * The built-in kitchen categories with how many catalog products are in each (only available
+ * ones with `available`), in the built-in order. A kitchen-oriented alternative to Frisco's own
+ * category tree.
+ */
+export async function listKitchenCategories({ available } = {}) {
+  const query = db('catalog_products').whereNotNull('kitchen_category').groupBy('kitchen_category').select('kitchen_category', db.raw('count(*) as count'));
+  if (available !== undefined) query.where('is_available', available);
+  const counts = new Map((await query).map((row) => [row.kitchen_category, Number(row.count)]));
+  return PRODUCT_CATEGORIES.filter((name) => counts.has(name)).map((name) => ({ name, productCount: counts.get(name) }));
 }

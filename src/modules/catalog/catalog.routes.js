@@ -1,6 +1,12 @@
 import { Router } from 'express';
 import { validate } from '../../middleware/validate.js';
-import { catalogCategoriesQuerySchema, catalogIdParamsSchema, catalogProductsQuerySchema, suggestionsQuerySchema } from './catalog.schema.js';
+import {
+  catalogCategoriesQuerySchema,
+  catalogIdParamsSchema,
+  catalogProductsQuerySchema,
+  kitchenCategoriesQuerySchema,
+  suggestionsQuerySchema,
+} from './catalog.schema.js';
 import * as catalog from './catalog.service.js';
 import { suggestNames } from './catalog.suggest.js';
 
@@ -21,6 +27,11 @@ catalogRouter.get('/products/:id', validate({ params: catalogIdParamsSchema }), 
 
 catalogRouter.get('/categories', validate({ query: catalogCategoriesQuerySchema }), async (req, res) => {
   res.json({ items: await catalog.listCatalogCategories(req.validated.query) });
+});
+
+// The built-in kitchen categories with product counts, for browsing the catalog by them.
+catalogRouter.get('/kitchen-categories', validate({ query: kitchenCategoriesQuerySchema }), async (req, res) => {
+  res.json({ items: await catalog.listKitchenCategories(req.validated.query) });
 });
 
 catalogRouter.get('/categories/:id', validate({ params: catalogIdParamsSchema }), async (req, res) => {

@@ -69,7 +69,9 @@ Quick overview (base path `/api/v1`, except `/health`):
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | Liveness check |
-| GET | `/products?search=` | List products (search by name or manufacturer) |
+| GET | `/products?search=&category=` | List products (search by name or manufacturer, filter by category) |
+| GET | `/products/categories` | Built-in product categories plus the user's own, with counts |
+| GET | `/products/suggestion?name=` | Suggested category and manufacturer for a product name (user's own products first, then the catalog) |
 | GET | `/products/:id` | One product |
 | GET | `/products/:id/recipes` | Recipes that use the product |
 | GET | `/products/:id/price-history` | Price changes, newest first, with the recipes each one affected |
@@ -78,17 +80,20 @@ Quick overview (base path `/api/v1`, except `/health`):
 | PUT | `/products/:id` | Replace. Returns `{ product, recalculatedRecipes }` |
 | PATCH | `/products/:id` | Partial update. Returns `{ product, recalculatedRecipes }` |
 | DELETE | `/products/:id` | Delete (204). **409 `PRODUCT_IN_USE`** if a recipe uses it |
-| GET | `/recipes?search=` | List recipe summaries |
+| GET | `/recipes?search=&category=` | List recipe summaries |
+| GET | `/recipes/categories` | Built-in recipe categories plus the user's own, with counts |
 | GET | `/recipes/:id` | Full recipe with ingredients and steps |
 | GET | `/recipes/:id/cost-history` | Food cost changes, newest first, with the product price change that caused each one |
 | GET | `/recipes/:id/changes` | Change log of the recipe (all fields), newest first |
 | GET | `/recipes/:id/used-in` | Recipes that use this recipe as a sub-recipe |
 | GET | `/changes?entityType=&limit=&before=` | Change feed across all products and recipes, paged |
 | GET | `/catalog` | Frisco catalog status: feed date, counts |
-| GET | `/catalog/products?search=&categoryId=&brand=&ean=&unit=&available=&onSale=&minPrice=&maxPrice=&sort=&limit=&offset=` | Frisco products, filtered, sorted and paged |
+| GET | `/catalog/products?search=&categoryId=&kitchen=&kitchenCategory=&brand=&ean=&unit=&available=&onSale=&minPrice=&maxPrice=&sort=&limit=&offset=` | Frisco products, filtered, sorted and paged |
 | GET | `/catalog/products/:id` | One Frisco product with description and category path |
 | GET | `/catalog/categories?parentId=&search=` | Frisco categories (top level, children of one, or by name) |
 | GET | `/catalog/categories/:id` | One Frisco category with its path and children |
+| GET | `/catalog/kitchen-categories?available=` | Built-in kitchen categories with catalog product counts |
+| GET | `/catalog/suggestions?q=&price=&packageSize=&packageUnit=` | Product name suggestions for what the user is typing (main, more, others) |
 | POST | `/recipes` | Create (201) |
 | PUT | `/recipes/:id` | Replace (missing lists become empty) |
 | PATCH | `/recipes/:id` | Partial update. A list that is sent replaces the stored list |

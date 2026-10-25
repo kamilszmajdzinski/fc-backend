@@ -2,13 +2,24 @@ import { Router } from 'express';
 import { idParamsSchema, searchQuerySchema } from '../../lib/schemas.js';
 import { validate } from '../../middleware/validate.js';
 import { getEntityChanges, getProductPriceHistory } from '../history/history.service.js';
-import { productCreateSchema, productPatchSchema } from './products.schema.js';
+import { listCategories } from '../categories/categories.service.js';
+import { productCreateSchema, productPatchSchema, productSuggestionQuerySchema } from './products.schema.js';
 import * as products from './products.service.js';
 
 export const productsRouter = Router();
 
 productsRouter.get('/', validate({ query: searchQuerySchema }), async (req, res) => {
   res.json({ items: await products.listProducts(req.user.id, req.validated.query) });
+});
+
+// Before /:id, which would take "categories" for an id.
+productsRouter.get('/categories', async (req, res) => {
+  res.json({ items: await listCategories(req.user.id, 'product') });
+});
+
+// Category and manufacturer for the name typed in the product form.
+productsRouter.get('/suggestion', validate({ query: productSuggestionQuerySchema }), async (req, res) => {
+  res.json(await products.suggestProductDetails(req.user.id, req.validated.query.name));
 });
 
 productsRouter.get('/:id', validate({ params: idParamsSchema }), async (req, res) => {

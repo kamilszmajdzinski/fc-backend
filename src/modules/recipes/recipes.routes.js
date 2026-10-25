@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { idParamsSchema, searchQuerySchema } from '../../lib/schemas.js';
 import { validate } from '../../middleware/validate.js';
 import { getEntityChanges, getRecipeCostHistory } from '../history/history.service.js';
+import { listCategories } from '../categories/categories.service.js';
 import { recipeCreateSchema, recipePatchSchema } from './recipes.schema.js';
 import * as recipes from './recipes.service.js';
 
@@ -9,6 +10,11 @@ export const recipesRouter = Router();
 
 recipesRouter.get('/', validate({ query: searchQuerySchema }), async (req, res) => {
   res.json({ items: await recipes.listRecipes(req.user.id, req.validated.query) });
+});
+
+// Before /:id, which would take "categories" for an id.
+recipesRouter.get('/categories', async (req, res) => {
+  res.json({ items: await listCategories(req.user.id, 'recipe') });
 });
 
 recipesRouter.get('/:id', validate({ params: idParamsSchema }), async (req, res) => {

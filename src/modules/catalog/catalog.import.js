@@ -1,3 +1,5 @@
+import { kitchenCategory } from './catalog.kitchen.js';
+
 // Official public feed of the whole Frisco.pl catalog (~60 MB JSON, regenerated daily), offered in
 // https://www.frisco.pl/robots.txt for personal, non-commercial use.
 export const FEED_URL = 'https://commerce.frisco.pl/api/v1/integration/feeds/public?language=pl';
@@ -86,8 +88,14 @@ export async function importCatalog(db, feed) {
     throw new Error('The feed has no categories or products list');
   }
   const categories = feed.categories.map(toCategoryRow);
-  const products = feed.products.map(toProductRow);
   const links = feed.products.flatMap(toCategoryLinks);
+  const categoryById = new Map(categories.map((category) => [category.id, category]));
+  const linksByProduct = Map.groupBy(links, (link) => link.product_id);
+  const products = feed.products.map((product) => {
+    const row = toProductRow(product);
+    const productCategories = (linksByProduct.get(row.id) ?? []).map((link) => categoryById.get(link.category_id)).filter(Boolean);
+    return { ...row, kitchen_category: kitchenCategory(productCategories) };
+  });
 
   await db.transaction(async (trx) => {
     await trx('catalog_product_categories').del();

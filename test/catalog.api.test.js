@@ -51,6 +51,13 @@ const feed = {
   ],
 };
 
+// The same feed with one kitchen product more, under the shop's own brand.
+const kitchenFeed = {
+  ...feed,
+  categories: [...feed.categories, category('15', '15,1', 'Masło i margaryny', 1)],
+  products: [...feed.products, product('14', { name: 'Masło', brand: 'FRISCO FRESH', price: 7, categories: ['15,1'] })],
+};
+
 let api;
 before(async () => {
   api = await setupApi();
@@ -68,8 +75,10 @@ describe('catalog import', () => {
     assert.equal(res.body.packageSize, 0.5);
     assert.equal(res.body.packageUnit, 'l');
     assert.equal(res.body.pricingUnit, 'l');
+    // Catalog prices are shown as rounded "average market price" estimates, not the exact scraped
+    // shelf price (roundMarketPrice): 6.25 rounds to the nearest 0.50 here.
     assert.equal(res.body.price, 5);
-    assert.equal(res.body.regularPrice, 6.25);
+    assert.equal(res.body.regularPrice, 6.5);
     assert.equal(res.body.promotionPrice, 4.5);
     assert.equal(res.body.discountPercent, 20);
     assert.equal(res.body.pricePerUnit, 10);
@@ -175,7 +184,55 @@ describe('catalog products API', () => {
     assert.equal(res.body.description, 'Ser żółty');
     assert.equal(res.body.rating, 4.5);
     assert.equal(res.body.ratingVotes, 12);
-    assert.equal(res.body.pricePerUnit, 39.96);
+    // Rounded to a market-price estimate (roundMarketPrice): 39.96 -> nearest 1.
+    assert.equal(res.body.pricePerUnit, 40);
+  });
+
+  it('drafts a product of the user\'s from a catalog product, for the "add product" form', async () => {
+    // 0.25 kg reads better as 250 g; the test feed's "Sery" isn't a mapped category.
+    const cheese = (await api.get('/api/v1/catalog/products/12').expect(200)).body;
+    // The price is rounded to a market-price estimate (roundMarketPrice): 9.99 -> nearest 0.50.
+    assert.deepEqual(cheese.productDraft, {
+      name: 'Ser gouda',
+      manufacturer: 'Mlekovita',
+      category: null,
+      packageSize: 250,
+      packageUnit: 'g',
+      pricePerPackage: 10,
+    });
+
+    // "Napoje" maps onto a built-in category; no price and no brand stay null.
+    const water = (await api.get('/api/v1/catalog/products/13').expect(200)).body;
+    assert.deepEqual(water.productDraft, {
+      name: 'Woda 12 x 0,5 l',
+      manufacturer: null,
+      category: 'Napoje i alkohole',
+      packageSize: 6,
+      packageUnit: 'l',
+      pricePerPackage: null,
+    });
+  });
+
+  it('lists only kitchen products, or one kitchen category, and hides the shop\'s own brands', async () => {
+    await importCatalog(db, kitchenFeed);
+    const kitchen = await api.get('/api/v1/catalog/products').query({ kitchen: 'true' }).expect(200);
+    assert.deepEqual(ids(kitchen).sort(), ['13', '14'], 'only "Napoje" and "Masło i margaryny" are mapped in this feed');
+    const butter = await api.get('/api/v1/catalog/products').query({ kitchenCategory: 'Tłuszcze' }).expect(200);
+    assert.deepEqual(ids(butter), ['14']);
+    assert.equal(butter.body.items[0].kitchenCategory, 'Tłuszcze');
+    assert.equal(butter.body.items[0].brand, null);
+    assert.equal((await api.get('/api/v1/catalog/products/14').expect(200)).body.productDraft.manufacturer, null);
+  });
+
+  it('lists the kitchen categories with product counts, in the built-in order', async () => {
+    await importCatalog(db, kitchenFeed);
+    const res = await api.get('/api/v1/catalog/kitchen-categories').expect(200);
+    assert.deepEqual(res.body.items, [
+      { name: 'Tłuszcze', productCount: 1 },
+      { name: 'Napoje i alkohole', productCount: 1 },
+    ]);
+    const available = await api.get('/api/v1/catalog/kitchen-categories').query({ available: 'true' }).expect(200);
+    assert.deepEqual(available.body.items, [{ name: 'Tłuszcze', productCount: 1 }], 'the water is not available');
   });
 
   it('rejects invalid filters', async () => {
