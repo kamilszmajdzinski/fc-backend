@@ -46,6 +46,32 @@ describe('products API', () => {
     assert.deepEqual(byManufacturer.body.items.map((p) => p.name), ['Wheat flour']);
   });
 
+  it('counts how many recipes use each product, ignoring deleted recipes', async () => {
+    const butter = await createProduct(api, sampleProducts.butter);
+    const flour = await createProduct(api, sampleProducts.flour);
+
+    const recipe = await api
+      .post('/api/v1/recipes')
+      .send({ name: 'Shortcrust', portions: 10, ingredients: [{ productId: butter.id, quantity: 250, unit: 'g' }], steps: [] })
+      .expect(201);
+
+    const list = await api.get('/api/v1/products').expect(200);
+    assert.deepEqual(
+      list.body.items.map((p) => [p.name, p.usageCount]),
+      [
+        ['Butter 82%', 1],
+        ['Wheat flour', 0],
+      ],
+    );
+
+    const single = await api.get(`/api/v1/products/${butter.id}`).expect(200);
+    assert.equal(single.body.usageCount, 1);
+
+    await api.delete(`/api/v1/recipes/${recipe.body.id}`).expect(204);
+    const afterDelete = await api.get(`/api/v1/products/${butter.id}`).expect(200);
+    assert.equal(afterDelete.body.usageCount, 0);
+  });
+
   it('searches case-insensitively with Polish letters', async () => {
     await createProduct(api, { ...sampleProducts.butter, name: 'Śmietanka 36%', manufacturer: 'Łaciate' });
     await createProduct(api, { ...sampleProducts.flour, name: 'Żelatyna w proszku' });

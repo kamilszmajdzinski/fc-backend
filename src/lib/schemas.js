@@ -11,4 +11,14 @@ export const idParamsSchema = z.object({
 
 export const searchQuerySchema = z.object({
   search: z.string().trim().max(200).optional(),
+  // Exact category, ignoring letter case.
+  category: z.string().trim().min(1).max(100).optional(),
 });
+
+// A product's or recipe's category: any text, blank or null for none.
+export const categorySchema = z
+  .string()
+  .trim()
+  .max(100)
+  .nullish()
+  .transform((value) => (value === '' ? null : value));

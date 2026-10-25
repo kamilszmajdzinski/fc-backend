@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ingredientUnitSchema, yieldUnitSchema } from '../../lib/schemas.js';
+import { categorySchema, ingredientUnitSchema, yieldUnitSchema } from '../../lib/schemas.js';
 import { productCreateSchema } from '../products/products.schema.js';
 
 // An ingredient is an existing product (productId), a new product created inline (product) or
@@ -20,6 +20,7 @@ const ingredientSchema = z
 const recipeFields = {
   name: z.string().trim().min(1).max(200),
   description: z.string().trim().max(5000).nullish(),
+  category: categorySchema,
   portions: z.number().int().positive(),
   // Optional selling price of the whole recipe; null clears it.
   sellPrice: z.number().nonnegative().nullish(),

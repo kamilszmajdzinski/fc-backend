@@ -7,6 +7,7 @@ export function productSnapshot(row) {
     name: row.name,
     description: row.description,
     manufacturer: row.manufacturer,
+    category: row.category,
     packageSize: row.package_size,
     packageUnit: row.package_unit,
     pricePerPackage: round2(row.price_per_package),
@@ -31,6 +32,7 @@ export async function loadRecipeSnapshot(trx, recipeId) {
   return {
     name: recipe.name,
     description: recipe.description,
+    category: recipe.category,
     portions: recipe.portions,
     sellPrice: round2OrNull(recipe.sell_price),
     yieldQuantity: recipe.yield_quantity,
@@ -52,6 +54,7 @@ export function recipeSnapshotFromDeletion(changes) {
   const snapshot = {
     name: null,
     description: null,
+    category: null,
     portions: null,
     sellPrice: null,
     yieldQuantity: null,

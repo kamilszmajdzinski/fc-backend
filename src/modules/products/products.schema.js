@@ -1,10 +1,11 @@
 import { z } from 'zod';
-import { unitSchema } from '../../lib/schemas.js';
+import { categorySchema, unitSchema } from '../../lib/schemas.js';
 
 const productFields = {
   name: z.string().trim().min(1).max(200),
   description: z.string().trim().max(5000).nullish(),
   manufacturer: z.string().trim().max(200).nullish(),
+  category: categorySchema,
   packageSize: z.number().positive(),
   packageUnit: unitSchema,
   pricePerPackage: z.number().nonnegative().optional(),
@@ -19,3 +20,7 @@ export const productCreateSchema = z.object(productFields).refine(
 );
 
 export const productPatchSchema = z.object(productFields).partial();
+
+export const productSuggestionQuerySchema = z.object({
+  name: z.string().trim().min(2, 'Type at least 2 characters').max(200),
+});

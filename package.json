@@ -14,6 +14,7 @@
     "migrate": "knex migrate:latest",
     "migrate:rollback": "knex migrate:rollback",
     "seed": "knex seed:run",
+    "catalog:import": "node scripts/import-catalog.js",
     "test": "node --env-file=test/test.env --test \"test/**/*.test.js\""
   },
   "dependencies": {

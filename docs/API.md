@@ -5,9 +5,10 @@ Everything a web or mobile client needs to talk to the pastry chef backend (step
 - [Basics](#basics)
 - [TypeScript types](#typescript-types)
 - [Units](#units)
-- [Products](#products): [list](#list-products) · [get](#get-a-product) · [recipes using it](#recipes-that-use-a-product) · [create](#create-a-product) · [replace](#replace-a-product) · [update](#update-a-product) · [delete](#delete-a-product)
-- [Recipes](#recipes): [list](#list-recipes) · [get](#get-a-recipe) · [create](#create-a-recipe) · [replace](#replace-a-recipe) · [update](#update-a-recipe) · [delete](#delete-a-recipe) · [restore](#restore-a-recipe) · [sub-recipes](#sub-recipes) · [used in](#recipes-that-use-a-recipe)
+- [Products](#products): [list](#list-products) · [categories](#product-categories) · [suggestion](#product-suggestion) · [get](#get-a-product) · [recipes using it](#recipes-that-use-a-product) · [create](#create-a-product) · [replace](#replace-a-product) · [update](#update-a-product) · [delete](#delete-a-product)
+- [Recipes](#recipes): [list](#list-recipes) · [categories](#recipe-categories) · [get](#get-a-recipe) · [create](#create-a-recipe) · [replace](#replace-a-recipe) · [update](#update-a-recipe) · [delete](#delete-a-recipe) · [restore](#restore-a-recipe) · [sub-recipes](#sub-recipes) · [used in](#recipes-that-use-a-recipe)
 - [History](#history): [price and cost history](#price-and-cost-history) · [product price history](#product-price-history) · [recipe cost history](#recipe-cost-history) · [change log](#change-log) · [product and recipe change log](#product-and-recipe-change-log) · [change feed](#change-feed)
+- [Catalog (Frisco.pl)](#catalog-friscopl): [status](#catalog-status) · [kitchen categories](#kitchen-categories) · [name suggestions](#name-suggestions) · [list products](#list-catalog-products) · [get a product](#get-a-catalog-product) · [categories](#catalog-categories)
 - [Errors](#errors)
 - [UI flows and gotchas](#ui-flows-and-gotchas)
 - [Not supported yet](#not-supported-yet)
@@ -22,10 +23,10 @@ Everything a web or mobile client needs to talk to the pastry chef backend (step
 | Auth | Every `/api/v1` request needs `Authorization: Bearer <access token>` from Supabase Auth (Google login): `(await supabase.auth.getSession()).data.session.access_token`. Without a valid token: `401 UNAUTHORIZED`. `/health` is public. |
 | Data | Each user has their own products, recipes and history. Another user's ids behave exactly like ids that don't exist (`404`, or "does not exist" when used as an ingredient). |
 | CORS | Allowed origins come from the backend's `CORS_ORIGIN` setting (default `*`). |
-| IDs | Positive integers. |
+| IDs | Positive integers. Catalog ids are Frisco's own ids, sent as digit strings (e.g. `"19136"`). |
 | Dates | ISO 8601 strings in UTC, e.g. `"2026-10-08T09:09:27.000Z"`. |
 | Money | Plain numbers rounded to 2 decimals. There is no currency field; the app decides the currency. `unitPrice` on recipe ingredients is rounded to 6 decimals because prices per g or mg are tiny. |
-| Lists | Always `{ "items": [...] }`, sorted by name. No pagination yet. |
+| Lists | Always `{ "items": [...] }`, sorted by name. Only catalog products are paged and sortable. |
 | Unknown fields | Ignored, so you can send an object you got from a GET back in a PUT. |
 | Request body limit | 1 MB |
 
@@ -63,12 +64,14 @@ export interface Product {
   name: string;
   description: string | null;
   manufacturer: string | null;
+  category: string | null;    // e.g. 'Nabiał', see "Categories"
   packageSize: number;        // e.g. 200
   packageUnit: Unit;          // e.g. 'g'  -> "package of 200 g"
   pricePerPackage: number;    // e.g. 8
   pricePerUnit: number;       // price per pricingUnit, e.g. 40
   pricingUnit: PricingUnit;   // 'kg' for mg/g/kg, 'l' for ml/l, 'piece' for piece
   inventoryQuantity: number;  // how much the user has, in packageUnit
+  usageCount: number;         // how many (non-deleted) recipes use this product
   createdAt: string;
   updatedAt: string;
 }
@@ -79,6 +82,7 @@ export interface ProductInput {
   name: string;
   description?: string | null;
   manufacturer?: string | null;
+  category?: string | null;   // default null; blank also means none
   packageSize: number;
   packageUnit: Unit;
   pricePerPackage?: number;
@@ -88,6 +92,27 @@ export interface ProductInput {
 
 // PATCH /products/:id - every field optional.
 export type ProductPatch = Partial<ProductInput>;
+
+// GET /products/categories, GET /recipes/categories
+export interface Category {
+  name: string;
+  count: number;       // the user's products (or active recipes) in this category
+  isDefault: boolean;  // built-in; false for categories the user made up
+}
+
+export interface SuggestedValue {
+  value: string;
+  source: 'own' | 'catalog'; // 'own': from the user's products with a similar name
+  confidence: number;        // 0-1, share of the similar products with this value
+  alternatives: string[];    // other likely values, most likely first
+}
+
+// GET /products/suggestion?name=
+export interface ProductSuggestion {
+  name: string;                         // the name it was asked for
+  category: SuggestedValue | null;      // null when nothing fits
+  manufacturer: SuggestedValue | null;  // null when nothing fits
+}
 
 export interface RecipeRef {
   id: number;
@@ -113,6 +138,7 @@ export interface RecipeSummary {
   id: number;
   name: string;
   description: string | null;
+  category: string | null;
   portions: number;
   foodCost: number;
   costPerPortion: number;
@@ -142,6 +168,7 @@ export interface Recipe {
   id: number;
   name: string;
   description: string | null;
+  category: string | null;  // e.g. 'Tarty', see "Categories"
   portions: number;
   foodCost: number;         // sum of ingredient costs
   costPerPortion: number;   // foodCost / portions
@@ -164,6 +191,7 @@ export type IngredientInput =
 export interface RecipeInput {
   name: string;
   description?: string | null;
+  category?: string | null;        // default null; blank also means none
   portions: number;
   sellPrice?: number | null;       // default null
   yieldQuantity?: number | null;   // default null; set together with yieldUnit
@@ -227,10 +255,10 @@ export interface RecipeCostChange extends CostSnapshot {
 // ---------- Change log ----------
 
 export type ProductField =
-  | 'name' | 'description' | 'manufacturer' | 'packageSize' | 'packageUnit'
+  | 'name' | 'description' | 'manufacturer' | 'category' | 'packageSize' | 'packageUnit'
   | 'pricePerPackage' | 'pricePerUnit' | 'inventoryQuantity';
 export type RecipeField =
-  | 'name' | 'description' | 'portions' | 'sellPrice' | 'yieldQuantity' | 'yieldUnit'
+  | 'name' | 'description' | 'category' | 'portions' | 'sellPrice' | 'yieldQuantity' | 'yieldUnit'
   | 'ingredients' | 'steps' | 'foodCost';
 
 // One line of a recipe's ingredient list as it was at the time of the change.
@@ -264,6 +292,126 @@ export interface ChangeLogEntry extends ChangeEntry {
 export interface ChangeFeed {
   items: ChangeLogEntry[];
   nextBefore: number | null; // pass as ?before= to get the next page; null when there is no more
+}
+
+// ---------- Catalog (Frisco.pl, read-only) ----------
+
+export type CatalogUnit = 'kg' | 'l' | 'piece';
+
+// Catalog price fields are rounded to a coarser step as the price grows (nearest 0.10 below 5 zł,
+// 0.50 below 20 zł, 1 below 100 zł, 5 above), so every price in the catalog reads as an
+// approximate "average market price" estimate rather than an exact source figure.
+export type CatalogSortField = 'name' | 'brand' | 'price' | 'pricePerUnit' | 'discountPercent';
+export type CatalogSort = CatalogSortField | `-${CatalogSortField}`; // "-" = descending
+
+export interface CatalogCategoryRef {
+  id: string;
+  name: string;
+}
+
+export interface CatalogProduct {
+  id: string;                     // Frisco product id
+  ean: string | null;
+  name: string;
+  brand: string | null;           // normal case ("ŻABCZYŃSCY" -> "Żabczyńscy"); null for the shop's own labels
+  producer: string | null;
+  packageSize: number | null;     // whole package in packageUnit: 0.2 (kg), or 6 (l) for 12 x 0.5 l
+  packageUnit: CatalogUnit | null;
+  packCount: number;              // items in a multipack, usually 1
+  price: number | null;           // average market price estimate (PLN, incl. VAT, rounded, see above); null for a few products
+  regularPrice: number | null;    // price without the current discount; equals price when not on sale
+  promotionPrice: number | null;  // price with a conditional promotion (e.g. buy 2), if any
+  discountPercent: number | null; // (regularPrice - price) / regularPrice; null when not on sale
+  pricePerUnit: number | null;    // average price per kg / l / piece (rounded, see above); null without price or packageSize
+  pricingUnit: CatalogUnit | null;
+  vat: number | null;             // percent, e.g. 23
+  isAvailable: boolean;
+  kitchenCategory: string | null; // a built-in product category; null for non-kitchen products
+  primaryCategory: CatalogCategoryRef | null;
+  imageUrl: string | null;
+  productUrl: string | null;      // product page on frisco.pl
+}
+
+export interface CatalogProductDetail extends CatalogProduct {
+  nameEn: string | null;
+  description: string | null;
+  stock: number | null;
+  rating: number | null;          // 0-5
+  ratingVotes: number | null;
+  countryOfOrigin: string | null; // e.g. 'PL'
+  primaryCategoryPath: CatalogCategoryRef[]; // top level first
+  productDraft: ProductDraft;     // prefill for "add to my products"
+}
+
+// The user's own product as a catalog product would make it. Null where the catalog has nothing.
+export interface ProductDraft {
+  name: string;
+  manufacturer: string | null;    // the brand, in normal case ("ŻABCZYŃSCY" -> "Żabczyńscy")
+  category: string | null;        // a built-in product category
+  packageSize: number | null;     // below 1 kg / 1 l in g / ml: 0.25 kg -> 250 g
+  packageUnit: Unit | null;
+  pricePerPackage: number | null; // average market price estimate (rounded, see above)
+}
+
+// GET /catalog/products
+export interface CatalogProductPage {
+  items: CatalogProduct[];
+  total: number;   // matching products across all pages
+  limit: number;
+  offset: number;
+}
+
+export interface CatalogCategory {
+  id: string;
+  name: string;
+  nameEn: string | null;
+  parentId: string | null;   // null for top-level categories
+  depth: number;             // 0 = top level
+  productCount: number;      // products in the whole subtree
+  hasChildren: boolean;
+  url: string | null;
+}
+
+// GET /catalog/categories/:id (also `path` on search results)
+export interface CatalogCategoryDetail extends CatalogCategory {
+  path: CatalogCategoryRef[];     // top level first, ending with this category
+  children: CatalogCategory[];
+}
+
+export interface NameSuggestion {
+  name: string;          // e.g. 'Mąka pszenna'
+  productCount: number;  // catalog products behind the name
+  brands: { name: string; productCount: number }[]; // most common first, max 5, as Frisco writes them (without the shop's own labels)
+  price?: {              // only with ?price=true; null when no product has a price in that unit
+    pricingUnit: CatalogUnit;
+    pricePerUnit: number;          // median, rounded, see above
+    low: number;                   // 25th percentile, rounded, see above
+    high: number;                  // 75th percentile, rounded, see above
+    sampleSize: number;
+    pricePerPackage: number | null; // with packageSize + packageUnit, rounded, see above
+  } | null;
+}
+
+// GET /catalog/suggestions
+export interface NameSuggestions {
+  query: string;
+  main: NameSuggestion | null;  // the most likely name; null when nothing matches
+  more: NameSuggestion[];       // main plus one word, e.g. 'Mąka pszenna' (max 5)
+  others: NameSuggestion[];     // other completions of the query (max 3)
+}
+
+// GET /catalog/kitchen-categories
+export interface KitchenCategory {
+  name: string;          // a built-in product category, e.g. 'Nabiał'
+  productCount: number;
+}
+
+// GET /catalog
+export interface CatalogStatus {
+  feedGeneratedAt: string | null; // when Frisco generated the imported feed
+  importedAt: string | null;
+  categoryCount: number;
+  productCount: number;
 }
 
 // ---------- Errors ----------
@@ -362,6 +510,7 @@ The preview can differ from the saved value by a cent, because `pricePerPackage`
 | Query | Type | Notes |
 |---|---|---|
 | `search` | string, optional, max 200 | Case-insensitive match anywhere in the name **or** the manufacturer. |
+| `category` | string, optional, max 100 | Only products in this category (letter case doesn't matter). |
 
 Response `200`: `ListResponse<Product>`
 
@@ -373,18 +522,62 @@ Response `200`: `ListResponse<Product>`
       "name": "Butter 82%",
       "description": "Unsalted butter",
       "manufacturer": "Dairy Co.",
+      "category": "Tłuszcze",
       "packageSize": 200,
       "packageUnit": "g",
       "pricePerPackage": 8,
       "pricePerUnit": 40,
       "pricingUnit": "kg",
       "inventoryQuantity": 1000,
+      "usageCount": 3,
       "createdAt": "2026-10-08T09:09:27.000Z",
       "updatedAt": "2026-10-08T09:09:27.000Z"
     }
   ]
 }
 ```
+
+`usageCount` is how many (non-deleted) recipes use the product, directly — it's meant for sorting/filtering the product list by popularity, not for blocking anything. The response isn't sorted by it; sort client-side if needed.
+
+### Product categories
+
+Every product and recipe can have a `category`: free text up to 100 characters, or `null`. The API has a built-in list, but the user can pick any other category or make up their own. A category that matches an existing one (built-in or the user's own) apart from letter case is saved with the existing spelling, so `"nabiał"` is stored as `"Nabiał"`. Product and recipe categories are separate lists.
+
+`GET /products/categories` → `ListResponse<Category>`: the built-in product categories plus every category the user has used, sorted by name. Use it for the category picker; let the user type a new one too.
+
+```json
+{
+  "items": [
+    { "name": "Cukier i słodziki", "count": 2, "isDefault": true },
+    { "name": "Mąki włoskie", "count": 3, "isDefault": false },
+    { "name": "Nabiał", "count": 0, "isDefault": true }
+  ]
+}
+```
+
+Built-in product categories: Mąka i produkty zbożowe, Cukier i słodziki, Nabiał, Jaja, Tłuszcze, Czekolada i kakao, Orzechy i nasiona, Owoce, Owoce suszone, Dżemy, miody i kremy, Dodatki do wypieków, Przyprawy, Warzywa, Mięso i ryby, Napoje i alkohole, Słodycze i przekąski, Pieczywo, Inne.
+
+### Product suggestion
+
+`GET /products/suggestion?name=Mąka pszenna` → `ProductSuggestion`
+
+| Query | Type | Notes |
+|---|---|---|
+| `name` | string, required, 2–200 | The product name the user typed or picked from the [name suggestions](#name-suggestions). |
+
+Suggests a `category` and a `manufacturer` for a product name, for the product form. Each is a `SuggestedValue` or `null`:
+1. **`source: "own"`**: what the user chose before. The category comes from their products with the same name or, failing that, the same first word, so once a user moves "Mąka pszenna" to their own "Mąki włoskie", "Mąka orkiszowa" is suggested there too. The manufacturer comes only from products with the same name. The catalog's suggestions become the `alternatives`.
+2. **`source: "catalog"`**: otherwise, from the [catalog](#catalog-friscopl) products with a similar name. The category is a built-in one. The manufacturer is the most common brand among those products in that category (lemons, not lemon beer), with Frisco's capitals turned into normal case ("ŻABCZYŃSCY" → "Żabczyńscy"). Polish letters are optional (`maka` works), and words the catalog doesn't know are ignored ("Mąka pszenna Szymanowska 1kg").
+
+```json
+{
+  "name": "Mąka pszenna",
+  "category": { "value": "Mąka i produkty zbożowe", "source": "catalog", "confidence": 1, "alternatives": [] },
+  "manufacturer": { "value": "Żabczyńscy", "source": "catalog", "confidence": 0.44, "alternatives": ["Sarita", "BIO Planet", "Basia", "Szczepanki"] }
+}
+```
+
+It's only a suggestion and is never saved on its own. Send `category` and `manufacturer` with the product. Many brands make the same thing, so a catalog manufacturer often has a low `confidence`. Show it as a choice rather than filling it in, see [product form](#ui-flows-and-gotchas). Errors: `400 VALIDATION_ERROR` for a name shorter than 2 characters.
 
 ### Get a product
 
@@ -415,6 +608,7 @@ Errors: `404 NOT_FOUND`.
 | `name` | string | yes | 1–200 characters (trimmed) |
 | `description` | string \| null | no | max 5000 |
 | `manufacturer` | string \| null | no | max 200 |
+| `category` | string \| null | no | max 100, default `null`. Any text, see [categories](#product-categories). Blank means none. |
 | `packageSize` | number | yes | > 0. How much is in one package, e.g. `200`. |
 | `packageUnit` | `Unit` | yes | Unit of `packageSize`, e.g. `"g"`. |
 | `pricePerPackage` | number | one of the two | ≥ 0 |
@@ -440,7 +634,7 @@ Response `201`: `Product`, with `pricePerUnit: 40` and `pricingUnit: "kg"` fille
 
 `PUT /products/:id` with body `ProductInput` (same rules as create)
 
-Replaces **every** field. Any optional field you leave out is reset: `description` and `manufacturer` become `null` and `inventoryQuantity` becomes `0`. For edit forms, prefer [PATCH](#update-a-product).
+Replaces **every** field. Any optional field you leave out is reset: `description`, `manufacturer` and `category` become `null` and `inventoryQuantity` becomes `0`. For edit forms, prefer [PATCH](#update-a-product).
 
 Response `200`: `ProductUpdateResult`. Errors: `400`, `404`, `409 UNIT_CONFLICT`.
 
@@ -537,6 +731,7 @@ Deleted recipes don't block the deletion. Their lines with this product are remo
 | Query | Type | Notes |
 |---|---|---|
 | `search` | string, optional, max 200 | Case-insensitive match anywhere in the recipe name. |
+| `category` | string, optional, max 100 | Only recipes in this category (letter case doesn't matter). |
 
 Response `200`: `ListResponse<RecipeSummary>`. Summaries don't include ingredients or steps.
 
@@ -547,6 +742,7 @@ Response `200`: `ListResponse<RecipeSummary>`. Summaries don't include ingredien
       "id": 2,
       "name": "Chantilly cream",
       "description": "Vanilla whipped cream",
+      "category": "Kremy i masy",
       "portions": 8,
       "foodCost": 18.23,
       "costPerPortion": 2.28,
@@ -557,6 +753,12 @@ Response `200`: `ListResponse<RecipeSummary>`. Summaries don't include ingredien
   ]
 }
 ```
+
+### Recipe categories
+
+`GET /recipes/categories` → `ListResponse<Category>`, the same as [product categories](#product-categories) but for recipes. Deleted recipes don't count.
+
+Built-in recipe categories: Torty, Ciasta, Serniki, Tarty, Ciasteczka, Monoporcje, Desery, Lody i sorbety, Pieczywo, Kremy i masy, Spody i blaty, Sosy i polewy, Dekoracje, Inne.
 
 ### Get a recipe
 
@@ -572,6 +774,7 @@ Response `200`: `Recipe` (example under [Create a recipe](#create-a-recipe)). Er
 |---|---|---|---|
 | `name` | string | yes | 1–200 characters (trimmed) |
 | `description` | string \| null | no | max 5000 |
+| `category` | string \| null | no | max 100, default `null`. Any text, see [recipe categories](#recipe-categories). Blank means none. |
 | `portions` | integer | yes | ≥ 1 |
 | `sellPrice` | number \| null | no | ≥ 0, default `null`. Selling price of the **whole recipe** (the same scope as `foodCost`). |
 | `yieldQuantity` | number \| null | no | > 0, default `null`. What the whole recipe makes, e.g. `550`. Set together with `yieldUnit`. |
@@ -1104,6 +1307,144 @@ Response `200`: `ChangeFeed`, i.e. `{ "items": ChangeLogEntry[], "nextBefore": n
 
 ---
 
+## Catalog (Frisco.pl)
+
+A read-only internal reference of kitchen ingredients and their approximate market prices (about 9,700 products in 17 built-in [kitchen categories](#kitchen-categories)), the same for every user, sourced and refreshed periodically from public grocery pricing. Data is at most as fresh as the last import (see [status](#catalog-status)).
+
+Every price field (`price`, `regularPrice`, `promotionPrice`, `pricePerUnit`, and `productDraft.pricePerPackage`) is a rounded **average market price estimate**, not a verbatim source figure (see "TypeScript types" below). Sorting and filtering by price still use the precise underlying figure, only the number shown to the user is rounded.
+
+Catalog products are separate from the user's own [products](#products). To use one in recipes, create a product from it, e.g. `{ name, manufacturer: brand, packageSize, packageUnit, pricePerPackage: price }` (the units `kg`, `l` and `piece` are valid product units).
+
+### Catalog status
+
+`GET /catalog` → `CatalogStatus`
+
+```json
+{ "feedGeneratedAt": "2026-10-25T01:21:19+02:00", "importedAt": "2026-10-25T00:30:02.000Z", "categoryCount": 9956, "productCount": 14926 }
+```
+
+Before the first import all counts are `0` and the dates `null`.
+
+### List catalog products
+
+`GET /catalog/products` → `CatalogProductPage`
+
+All query parameters are optional and can be combined (they all have to match).
+
+| Parameter | Example | Meaning |
+|---|---|---|
+| `search` | `masło` | Part of the name, brand or producer. Case-insensitive, Polish letters work. |
+| `categoryId` | `18974` or `18974,19136` | In any of these categories **or their subcategories**. |
+| `kitchen` | `true` | Only kitchen products: those with a `kitchenCategory`. Leaves out cosmetics, cleaning, ready meals and so on. |
+| `kitchenCategory` | `Nabiał` | In this [kitchen category](#kitchen-categories). |
+| `brand` | `Łaciate` | Exact brand, case-insensitive. |
+| `ean` | `5900820000011` | Exact barcode. |
+| `unit` | `kg` | `kg`, `l` or `piece`. |
+| `available` | `true` | `true` / `false`: can be ordered right now. |
+| `onSale` | `true` | `true`: the shelf price is reduced (`regularPrice > price`). `false`: it isn't. |
+| `minPrice`, `maxPrice` | `5`, `20` | Range for `price` (inclusive). Products without a price are left out when either is set. |
+| `sort` | `-pricePerUnit` | `name` (default), `brand`, `price`, `pricePerUnit` or `discountPercent`; put `-` in front for descending. Products without a value (e.g. no price) are always last. |
+| `limit` | `50` | Page size, 1–200, default 50. |
+| `offset` | `100` | How many to skip, default 0. Next page: `offset + limit` while it is less than `total`. |
+
+Cheapest available butter per kg in the dairy category:
+
+`GET /api/v1/catalog/products?categoryId=18974&search=masło&available=true&sort=pricePerUnit&limit=2`
+
+```json
+{
+  "items": [
+    {
+      "id": "135845",
+      "ean": "5908235955780",
+      "name": "Masło extra 82% tłuszczu",
+      "brand": "KANKA",
+      "producer": "LUMIKO",
+      "packageSize": 0.2,
+      "packageUnit": "kg",
+      "packCount": 1,
+      "price": 5,
+      "regularPrice": 5,
+      "promotionPrice": null,
+      "discountPercent": null,
+      "pricePerUnit": 25,
+      "pricingUnit": "kg",
+      "vat": 5,
+      "isAvailable": true,
+      "kitchenCategory": "Tłuszcze",
+      "primaryCategory": { "id": "19125", "name": "Tradycyjne" },
+      "imageUrl": "https://res.cloudinary.com/dj484tw6k/f_auto,q_auto,c_pad,b_white,w_360,h_360/v1789037466/5f1aea20-8035-4082-ba3e-fe5acf07bc4d.png"
+    }
+  ],
+  "total": 28,
+  "limit": 2,
+  "offset": 0
+}
+```
+
+One item shown; the second is left out.
+
+Invalid parameters (e.g. `sort=cheapest`, `available=yes`, `minPrice` above `maxPrice`, `limit=500`) → `400 VALIDATION_ERROR` with paths like `query.sort`.
+
+### Get a catalog product
+
+`GET /catalog/products/:id` → `CatalogProductDetail`: everything from the list, plus the description, rating, stock, country of origin and the full path of the primary category (`[{ "id": "18974", "name": "Nabiał, jaja, sery" }, ...]`). Unknown id → `404`.
+
+`productDraft` prefills the form for adding the catalog product to the user's own products. Let the user adjust it, then send it as a `ProductInput` to [`POST /products`](#create-a-product). Ask for whatever is `null`, such as a missing price.
+
+```json
+{ "name": "Masło extra 82% tłuszczu", "manufacturer": "Kanka", "category": "Tłuszcze", "packageSize": 200, "packageUnit": "g", "pricePerPackage": 4.99 }
+```
+
+### Kitchen categories
+
+`GET /catalog/kitchen-categories` → `ListResponse<KitchenCategory>`: the built-in product categories (see [product categories](#product-categories)) that have catalog products, in the built-in order, with how many. With `?available=true`, only available products count. Use these to browse the catalog by kitchen use instead of the shop's own tree, and filter with `kitchenCategory`.
+
+```json
+{ "items": [{ "name": "Mąka i produkty zbożowe", "productCount": 655 }, { "name": "Cukier i słodziki", "productCount": 53 }] }
+```
+
+Every catalog product gets its `kitchenCategory` on import, from its Frisco categories (their names, so the BIO and local supplier trees count too). The shop's own labels (Frisco, Frisco Fresh, …) are never shown as a brand or suggested as a manufacturer.
+
+### Name suggestions
+
+`GET /catalog/suggestions?q=mąk` → `NameSuggestions`
+
+| Query | Type | Notes |
+|---|---|---|
+| `q` | string, required, 2–100 | What the user has typed so far. |
+| `price` | `true` \| `false`, optional | Add the median catalog `price` to every suggestion. |
+| `packageSize`, `packageUnit` | number, `Unit`, optional | The package being added, e.g. `500` + `g`. Prices are then per that unit's kg / l / piece and also `pricePerPackage`. `packageSize` needs `packageUnit`. |
+
+Product names for the "add product" form, taken from the start of the catalog's product names, which put the product's own noun first ("Mąka pszenna tortowa typ 450"). Only available, priced, kitchen products count (no cosmetics, cleaning, pet food, …). A query also matches brands ("nutella" → "Nutella").
+
+- `main`: the most likely name, e.g. `"mąk"` → "Mąka", or the typed word itself when it's common enough ("cukier", not "cukierki").
+- `more`: `main` plus one word, most common first: "Mąka pszenna", "Mąka orkiszowa".
+- `others`: other completions: `"mas"` → "Mascarpone" next to "Masło".
+
+```json
+{
+  "query": "mąk",
+  "main": { "name": "Mąka", "productCount": 75, "brands": [{ "name": "ŻABCZYŃSCY", "productCount": 16 }, { "name": "BIO PLANET", "productCount": 16 }] },
+  "more": [
+    { "name": "Mąka pszenna", "productCount": 24, "brands": [{ "name": "ŻABCZYŃSCY", "productCount": 11 }] },
+    { "name": "Mąka puszysta", "productCount": 9, "brands": [{ "name": "LUBELLA", "productCount": 9 }] }
+  ],
+  "others": []
+}
+```
+
+After the user picks a name, call [`GET /products/suggestion`](#product-suggestion) with it for the category and manufacturer.
+
+### Catalog categories
+
+- `GET /catalog/categories` → `{ items: CatalogCategory[] }`: the top-level categories, sorted by name.
+- `GET /catalog/categories?parentId=18974` → the direct subcategories of a category.
+- `GET /catalog/categories?search=mleko` → up to 50 categories whose name contains the text, top levels first. Names repeat (the **BIO** `100000` and **Lokalni dostawcy** `200000` trees mirror the main tree under other ids), so each result also has `path`.
+- `GET /catalog/categories/:id` → `CatalogCategoryDetail` with `path` (breadcrumb) and `children`. Unknown id → `404`.
+
+Main top-level categories: Nabiał, jaja, sery `18974` · Mięso i wędliny `19136` · Warzywa i owoce `18703` · Spiżarnia `19378` · Z piekarni `18894` · Ryby `19227` · Mrożone `19254` · Dania gotowe `20235` · Słodycze i przekąski `20310` · Kawa i herbata `20515` · Napoje `21106` · Alkohole `20607` · BIO `100000` · Lokalni dostawcy `200000`.
+
 ## Errors
 
 Every error has the same shape:
@@ -1150,6 +1491,8 @@ Messages written for this app ("must be one of: mg, g, kg", "Provide pricePerPac
 ## UI flows and gotchas
 
 **Product form: prices.** Show both price inputs. Send only the price the user edited, and the API fills in the other. If you send both, `pricePerPackage` wins, so the user's edit to the per-unit price would be lost. Label the unit price with `pricingUnit`, e.g. "40.00 / kg".
+
+**Product form: name, category and manufacturer.** While the user types the name, show [`GET /catalog/suggestions`](#name-suggestions) under the field (debounced): `main` first, then `more` and `others`. When the user picks one, or leaves the field without picking, call [`GET /products/suggestion`](#product-suggestion) with the name. For a new product, fill in an empty `category`, and an empty `manufacturer` when its `source` is `"own"` or its `confidence` is at least 0.5, and mark the fields as suggested. Never overwrite what the user typed. Offer the rest (`alternatives`, or a low-confidence manufacturer) as quick picks. For the category picker, use the list from `GET /products/categories` plus a way to type a new one.
 
 **Product form: inventory.** `inventoryQuantity` is in `packageUnit`, so show the unit next to the input: "1000 g".
 
@@ -1210,6 +1553,6 @@ export function diffIngredients(from: IngredientSnapshot[] | null, to: Ingredien
 
 - Creating a sub-recipe inline while saving another recipe.
 - Converting between weight and volume (g ↔ ml).
-- Pagination and sort options (lists are sorted by name).
+- Pagination and sort options for products and recipes (lists are sorted by name; only the catalog is paged).
 - Photos.
 - Reducing inventory automatically when a recipe is made.

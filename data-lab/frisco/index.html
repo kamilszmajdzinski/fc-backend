@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frisco catalog</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 16px; color: #222; }
+  form, .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  input, select, button { font: inherit; padding: 4px 6px; }
+  input[type=number] { width: 80px; }
+  #token { width: 260px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #ddd; }
+  th { cursor: pointer; white-space: nowrap; }
+  td.n { text-align: right; white-space: nowrap; }
+  img { width: 36px; height: 36px; object-fit: contain; vertical-align: middle; }
+  .old { color: #888; text-decoration: line-through; }
+  .sale { color: #c00; }
+  .na { color: #aaa; }
+  #msg { color: #c00; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <input id="api" value="http://localhost:4000/api/v1" size="30" title="API base URL">
+  <input id="token" type="password" placeholder="token (not needed with CATALOG_PUBLIC=true)">
+  <span id="msg"></span>
+</div>
+<form id="f">
+  <input name="search" placeholder="Search name / brand">
+  <select id="cat0"></select><select id="cat1"></select><select id="cat2"></select>
+  <select name="unit"><option value="">any unit</option><option>kg</option><option>l</option><option>piece</option></select>
+  <label><input type="checkbox" name="available"> available</label>
+  <label><input type="checkbox" name="onSale"> on sale</label>
+  <input name="minPrice" type="number" step="0.01" min="0" placeholder="min zł">
+  <input name="maxPrice" type="number" step="0.01" min="0" placeholder="max zł">
+  <select name="sort">
+    <option value="name">name</option><option value="price">price ↑</option><option value="-price">price ↓</option>
+    <option value="pricePerUnit">per unit ↑</option><option value="-pricePerUnit">per unit ↓</option>
+    <option value="-discountPercent">biggest discount</option><option value="brand">brand</option>
+  </select>
+  <button>Search</button>
+</form>
+<div class="bar"><button id="prev">←</button><span id="info"></span><button id="next">→</button></div>
+<table>
+  <thead><tr><th></th><th>Name</th><th>Brand</th><th>Package</th><th>Price</th><th>Per unit</th><th>Category</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<script>
+const $ = (id) => document.getElementById(id);
+const LIMIT = 50;
+let offset = 0, total = 0;
+$('token').value = localStorage.fcToken || '';
+$('api').value = localStorage.fcApi || $('api').value;
+
+async function api(path, params = {}) {
+  localStorage.fcToken = $('token').value.trim();
+  localStorage.fcApi = $('api').value.trim();
+  const url = new URL(localStorage.fcApi + path);
+  for (const [k, v] of Object.entries(params)) if (v !== '' && v != null) url.searchParams.set(k, v);
+  const res = await fetch(url, { headers: localStorage.fcToken ? { Authorization: `Bearer ${localStorage.fcToken}` } : {} });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error?.message || res.statusText);
+  return body;
+}
+
+const money = (n) => (n == null ? '–' : n.toFixed(2));
+
+// Category dropdowns: top level, then children of the chosen one, two levels deep.
+async function fillCats(level, parentId) {
+  for (let i = level; i < 3; i++) $('cat' + i).innerHTML = '';
+  if (level >= 3) return;
+  const { items } = await api('/catalog/categories', { parentId });
+  if (!items.length) return;
+  $('cat' + level).innerHTML = `<option value="">${level ? 'all' : 'all categories'}</option>` +
+    items.map((c) => `<option value="${c.id}">${c.name} (${c.productCount})</option>`).join('');
+}
+[0, 1, 2].forEach((i) => $('cat' + i).addEventListener('change', async (e) => {
+  if (i < 2) await fillCats(i + 1, e.target.value || undefined).catch(show);
+  run(0);
+}));
+
+function show(err) { $('msg').textContent = err ? err.message : ''; }
+
+async function run(newOffset = 0) {
+  offset = newOffset;
+  const f = new FormData($('f'));
+  const categoryId = [2, 1, 0].map((i) => $('cat' + i).value).find(Boolean);
+  try {
+    const page = await api('/catalog/products', {
+      search: f.get('search'), categoryId, unit: f.get('unit'), sort: f.get('sort'),
+      available: f.get('available') ? 'true' : '', onSale: f.get('onSale') ? 'true' : '',
+      minPrice: f.get('minPrice'), maxPrice: f.get('maxPrice'), limit: LIMIT, offset,
+    });
+    show();
+    total = page.total;
+    $('info').textContent = `${total ? offset + 1 : 0}–${offset + page.items.length} of ${total}`;
+    $('rows').innerHTML = page.items.map((p) => `<tr>
+      <td>${p.imageUrl ? `<img src="${p.imageUrl}" loading="lazy">` : ''}</td>
+      <td><a href="${p.productUrl}" target="_blank">${p.name}</a>${p.isAvailable ? '' : ' <span class="na">(unavailable)</span>'}</td>
+      <td>${p.brand ?? ''}</td>
+      <td class="n">${p.packageSize ?? '–'} ${p.packageUnit ?? ''}${p.packCount > 1 ? ` (×${p.packCount})` : ''}</td>
+      <td class="n">${p.regularPrice > p.price ? `<span class="old">${money(p.regularPrice)}</span> <span class="sale">${money(p.price)}</span>` : money(p.price)}</td>
+      <td class="n">${p.pricePerUnit == null ? '–' : `${money(p.pricePerUnit)}/${p.pricingUnit}`}</td>
+      <td>${p.primaryCategory?.name ?? ''}</td></tr>`).join('');
+  } catch (err) { show(err); }
+}
+
+$('f').addEventListener('submit', (e) => { e.preventDefault(); run(0); });
+$('prev').onclick = () => offset > 0 && run(Math.max(0, offset - LIMIT));
+$('next').onclick = () => offset + LIMIT < total && run(offset + LIMIT);
+$('token').addEventListener('change', async () => { await fillCats(0).catch(show); run(0); });
+fillCats(0).then(() => run(0)).catch(show);
+</script>
+</body>
+</html>
